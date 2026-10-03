@@ -1,0 +1,8 @@
+[Unit]
+Description=Synchronize Traefik ACME certificate to OpenWiFi OWGW
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sync-openwifi-owgw-certificate
