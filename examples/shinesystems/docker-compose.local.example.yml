@@ -1,0 +1,73 @@
+services:
+  owgw:
+    ports:
+      - "15002:15002"
+    volumes:
+      - ./owgw_data/persist:/owgw-data/persist
+      - ./certs:/owgw-data/certs
+
+  owsec:
+    volumes:
+      - ./owsec_data/persist:/owsec-data/persist
+      - ./certs:/owsec-data/certs
+
+  owfms:
+    depends_on:
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./owfms_data/persist:/owfms-data/persist
+      - ./certs:/owfms-data/certs
+
+  owprov:
+    volumes:
+      - ./owprov_data/persist:/owprov-data/persist
+      - ./certs:/owprov-data/certs
+
+  owanalytics:
+    volumes:
+      - ./owanalytics_data/persist:/owanalytics-data/persist
+      - ./certs:/owanalytics-data/certs
+
+  owsub:
+    volumes:
+      - ./owsub_data/persist:/owsub-data/persist
+      - ./certs:/owsub-data/certs
+
+  owgw-ui:
+    image: openwifi-owgw-ui:shinesystems-20261003-canonical-images-r1
+    volumes:
+      - ./owgw-ui-devices:/usr/share/nginx/html/devices:ro
+
+  owprov-ui:
+    image: openwifi-owprov-ui:shinesystems-20261002-resources-r1
+
+  minio:
+    image: docker.io/bitnamilegacy/minio@sha256:b3d51900e846b92f7503ca6be07d2e8c56ebb6a13a60bc71b8777c716c074bcf
+    networks:
+      openwifi:
+        aliases:
+          - minio.wlan.local
+    env_file:
+      - owfms.env
+    environment:
+      MINIO_BROWSER: "off"
+      MINIO_DEFAULT_BUCKETS: "openwifi-firmware:download"
+    entrypoint:
+      - /bin/bash
+      - -ec
+      - |
+        export MINIO_ROOT_USER="$${S3_KEY}"
+        export MINIO_ROOT_PASSWORD="$${S3_SECRET}"
+        exec /opt/bitnami/scripts/minio/entrypoint.sh /opt/bitnami/scripts/minio/run.sh
+    expose:
+      - "9000"
+      - "9001"
+    volumes:
+      - ./minio_data:/bitnami/minio/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
