@@ -181,11 +181,9 @@ def handler(issuer, administration=None, mode="ap", activation=None):
     return Handler
 
 
-class IsolatedServer(http.server.HTTPServer):
+class BoundedServer(http.server.HTTPServer):
     """At most eight handshakes/requests, each with a five-second timeout."""
     def __init__(self, address, request_handler, tls_context=None):
-        if address[0] != "127.0.0.1":
-            raise ValueError("isolated listener must use loopback")
         if tls_context is not None and tls_context.verify_mode not in (ssl.CERT_OPTIONAL, ssl.CERT_REQUIRED):
             raise ValueError("TLS client chain verification required")
         self.tls_context, self.workers = tls_context, threading.BoundedSemaphore(8)
@@ -208,3 +206,10 @@ class IsolatedServer(http.server.HTTPServer):
         finally:
             self.shutdown_request(request)
             self.workers.release()
+
+
+class IsolatedServer(BoundedServer):
+    def __init__(self, address, request_handler, tls_context=None):
+        if address[0] != "127.0.0.1":
+            raise ValueError("isolated listener must use loopback")
+        super().__init__(address, request_handler, tls_context)

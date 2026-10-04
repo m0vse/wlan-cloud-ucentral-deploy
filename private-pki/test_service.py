@@ -43,6 +43,7 @@ class ServiceTests(unittest.TestCase):
                 .not_valid_after(self.clock + timedelta(days=2))
                 .add_extension(x509.BasicConstraints(ca=False, path_length=None), True)
                 .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), False)
+                .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(self.authority.device_key.public_key()), False)
                 .add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost")]), False)
                 .sign(self.authority.device_key, hashes.SHA256()))
         for filename, data in (("tls.pem", fixtures.pem(cert) + fixtures.pem(self.authority.device)),
