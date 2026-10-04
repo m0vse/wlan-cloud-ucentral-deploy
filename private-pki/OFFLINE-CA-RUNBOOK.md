@@ -61,8 +61,9 @@ old root, certificates and rollback configuration until that gate is satisfied.
 The production root and device issuer were created after tested recovery. The
 user confirmed two independent cloud backup copies and removed the temporary
 server exports; server-side absence was verified. The root recovery secret is
-not a service credential. Production deployment still requires dedicated online
-service credentials, portal controls,
-complete fleet evidence and scoped AP activation/reboot/rollback verification.
+not a service credential. Portal management uses the existing Root session; native enrollment and renewal
+use shared batch bootstrap authorization and AP mTLS respectively. No separate
+read service account is required. Full fleet migration and model-specific
+installer handoff/rollback qualification remain required before retiring trust.
 No real root creation, old trust removal or online root-key storage is authorized
 by running the synthetic tests.

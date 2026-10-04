@@ -122,7 +122,7 @@ def handler(issuer, administration=None, mode="ap", activation=None, installer=N
                 operation = self.path[len(prefix):]
                 if self.command == "GET" and operation in ("status", "audit"):
                     request = {}
-                elif self.command == "POST" and operation in ("authorize", "evidence", "approve-hardware", "approve-qualification", "approve-runtime", "approve-identity", "retirement-review", "onboard", "move-ca", "renew", "cancel-onboarding"):
+                elif self.command == "POST" and operation in ("authorize", "evidence", "approve-hardware", "approve-qualification", "approve-runtime", "approve-identity", "retirement-review", "onboard", "move-ca", "renew", "cancel-onboarding", "create-enrollment-key", "cancel-enrollment-key", "rotate-enrollment-key"):
                     if self.headers.get("Content-Type") != "application/json":
                         raise Denied(415, "JSON required")
                     request = json_object(self.body())
@@ -201,6 +201,7 @@ def handler(issuer, administration=None, mode="ap", activation=None, installer=N
 
 
 class BoundedServer(http.server.HTTPServer):
+    request_queue_size = 64
     """At most eight handshakes/requests, each with a five-second timeout."""
     def __init__(self, address, request_handler, tls_context=None):
         if tls_context is not None and tls_context.verify_mode not in (ssl.CERT_OPTIONAL, ssl.CERT_REQUIRED):

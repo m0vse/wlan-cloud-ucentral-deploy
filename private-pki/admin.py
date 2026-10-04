@@ -27,22 +27,29 @@ class Controller:
             raise ValueError("explicit HTTPS controller origin required")
         self.origin = origin.rstrip("/")
 
-    def fetch(self, port, route, authorization):
+    def request(self, port, route, authorization, method="GET", body=None, timeout=5):
         request = urllib.request.Request(f"{self.origin}:{port}/api/v1/{route}",
-            headers={"Authorization": authorization, "Accept": "application/json"})
+            headers={**({"Authorization": authorization} if authorization else {}), "Accept": "application/json", "Content-Type": "application/json"},
+            method=method, data=json.dumps(body).encode() if body is not None else None)
         try:
-            with urllib.request.urlopen(request, timeout=5) as response:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 body = response.read(65537)
             if len(body) > 65536:
                 raise ValueError("oversized controller response")
             data = json.loads(body)
-            if not isinstance(data, dict):
+            if not isinstance(data, (dict, list)):
                 raise ValueError("invalid controller response")
             return data
         except urllib.error.HTTPError as error:
             raise Denied(401 if error.code in (401, 403) else 502, "Controller request refused") from None
         except (urllib.error.URLError, TimeoutError, ValueError):
             raise Denied(502, "Controller unavailable") from None
+
+    def fetch(self, port, route, authorization):
+        data = self.request(port, route, authorization)
+        if not isinstance(data, dict):
+            raise Denied(502, "Invalid controller response")
+        return data
 
     def root(self, authorization):
         if not isinstance(authorization, str) or len(authorization) > 8192 or not re.fullmatch(r"Bearer [A-Za-z0-9._~+/-]+=*", authorization):

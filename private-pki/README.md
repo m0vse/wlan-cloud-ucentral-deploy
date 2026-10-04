@@ -1,91 +1,91 @@
-# Private AP certificate lifecycle — implementation in progress
+# Native OpenWiFi certificate enrollment and renewal
 
-The issuer core loads an existing protected device issuing key and certificate
-under a public private root. It never generates authorities on startup and never
-loads a root signing key. Private inputs must be owned by the service user and
-have mode 0600. No private material or deployment host defaults belong here.
+The provisioning portal validates the existing OWSEC Root session on every
+management request; no human session token is stored. APs use standard EST,
+PKCS10 and PKCS7. Renewal authenticates the actual TLS client certificate.
+Forwarded certificate headers are not accepted. The service loads only the
+protected device issuer key/certificate and public root, never a root private key.
 
-`enrollment_store.py` is reused from wlan-ap's earlier isolated PKI tests.
-`issuer.py` adds an issuance ledger, issuer-qualified certificate fingerprints,
-transactional issuance with hashed CSR-bound grants, persistent renewal retries,
-RSA2048–4096/P-256 AP keys, validity caps, and revocation/disabled-inventory checks.
-The CSR signature proves possession; an authenticated operator must separately
-approve inventory and authorize the exact CSR. Recovery uses a new operator grant.
+The production root has twenty-year validity and a separate renewable five-year
+issuer. Tested encrypted root recovery and issuer renewal are documented in
+OFFLINE-CA-RUNBOOK.md. Existing CA trust remains installed while APs migrate;
+offline status never implies retirement.
 
-`admin.py` adds OWSEC-verified root access, existing provisioning inventory
-binding and actor-attributed audit records. `service.py` exposes separate bounded
-loopback administration and real-TLS enrollment test adapters. Peer certificates
-come from the TLS socket. No trust is placed in forwarded certificate headers.
-`portal_runtime.py` provides a private-network administration listener behind
-the portal TLS proxy. Every request validates the existing Root session with
-OWSEC; no human token is stored. It reports prepared and retained authorities
-separately and checks observed public AP certificates against retained trust and
-current provisioning inventory. AP enrollment and revocation remain unavailable
-until gateway and AP activation integration is complete.
+## One enrollment key per batch
 
-`policy_publisher.py` atomically publishes short-lived, versioned public leaf
-pins from the private ledger. Revoked, disabled and expired identities are
-excluded. A gateway must mount the directory, rather than an individual file,
-to observe atomic replacement. `activation.py` consumes a short-lived challenge
-only after a trusted gateway reader reports a fresh, verified session bound to
-the exact serial, leaf and nonce. Challenge issuance and TLS connection alone
-are insufficient. The current activation tests use a synthetic gateway reader;
-`gateway_reader.py` adds a hostname-verified HTTPS gateway reader using a
-protected deployment credential. Production credential provisioning, routing
-and AP activation remain pending.
+Use the existing inventory CSV import or select pending APs, create one key,
+and reuse that key in the appropriate qualified local migration installer.
+There is no operator countdown or per-AP key generation. Every AP generates its
+own private key and CSR locally. Keys stay out of firmware, Git, URLs and logs.
 
-The protected qualification registry records reviewed manufacturing evidence and
-independent OEM/stock release and runtime records. `authorization_guard.py` binds
-grants to their exact versions, explicit lifecycle approval and resolved current
-inventory ownership in the same transaction. Redemption, retries and activation
-revalidate this binding before writes. Missing or changed evidence denies migration. OEM and stock
-OpenWrt qualification are separate operations; normal authenticated renewal is
-independent of migration qualification. Authoritative manufacturing evidence
-uses the private portal-managed registry joined to existing provisioning
-inventory, never guessed from deviceType, locale or radio country.
+Root portal API endpoints:
 
-`fleet_gate.py` provides a read-only root retirement preview. It checks complete
-count-verified paginated inventory and gateway lists, repeats the census to catch
-identity changes, and includes ledger-only devices. Offline status never retires
-an AP. Active identities require a current verified new-root session and recorded
-renewal acceptance; explicitly retired identities must retain the same record and
-ownership and have confirmed gateway disconnection. This preview does not remove
-trust or replace the final deployment gate.
+- POST /api/v1/pki/create-enrollment-key: serials array and operation `migration`
+  or `new-openwifi-enrollment`; returns id, enrollmentKey, devices and server.
+- POST /api/v1/pki/rotate-enrollment-key: id; replaces the shared bootstrap key.
+- POST /api/v1/pki/cancel-enrollment-key: id; disables bootstrap/retries for that
+  batch, without disabling issued certificates or their normal mTLS renewal.
+- POST /api/v1/pki/renew or move-ca: serial; invokes existing native gateway
+  reenroll. Durable progress follows verified native session metadata. An
+  ambiguous command timeout is checked, not automatically resubmitted.
 
-Run `python3 -B -m unittest -v test_issuer test_admin test_service test_policy_publisher test_activation test_gateway_reader test_offline_ca test_qualification_registry test_ownership test_lifecycle test_legacy_import test_authorization_guard test_fleet_gate` with
-cryptography 50.0.1 or compatible. Forty-four distinct tests pass in the Python 3.13 runtime including
-real loopback TLS bootstrap, client renewal and dual-root migration. The rollover
-fixture uses same-name authorities with explicit SKI/AKI binding and verifies
-old-only trust rejection and old-client/new-issuer reissuance. Loopback listeners require host
-network permission in sandboxed environments.
-Fixtures create disposable synthetic twenty-year roots. Tests do not access APs,
-existing trust, private production issuers, cloud databases or gateway sessions.
+Certificate references are full SHA256 fingerprints, separate from AP serials.
+Native gateway observation matches verified serial, issuer, expiry and session;
+it does not claim that the gateway exposes a DER certificate fingerprint.
 
-Outstanding integration gates:
+Campaign membership binds approved inventory ownership and immutable signed CSR
+contents. Safe retries return the same leaf, including regenerated ECDSA
+signatures. Migration enrollment also checks the trusted qualification registry;
+OEM and stock OpenWrt remain independent source operations. A shared enrollment
+key is neither firmware authorization nor a Root API credential.
 
-- Production service loading, protected deployment, portal routing, rate-limit
-  fleet tuning, audit retention and deployment recovery. The tested adapters
-  do not establish production service readiness or EST conformance.
-- Gateway admission before side effects, fresh serial/leaf/session acceptance,
-  authenticated revocation distribution and current-session disconnection.
-- AP key/CSR generation during authenticated installation, durable generation
-  staging/rollback, hostname-verified DHCP224-first/private-default discovery.
-- Provisioning portal lifecycle screens and existing inventory/config integration.
-- Root retirement requires complete fleet reconciliation and fresh management
-  acceptance, with explicit individual retirement for removed devices. The real
-  twenty-year **Shine Systems CA** and separate five-year device issuer were
-  created; encrypted root backups were handed off and temporary online root
-  exports removed. Production AP trust and identity migration remain pending.
-- Scoped recoverable E410 issuance, reboot retention, renewal, revocation/recovery.
+## Native AP interface
 
-The test core deliberately has no public listener and no deploy activation.
-The actual gateway admission, revocation and dual-root session tests pass in an
-isolated container; production gateway enforcement and AP activation are pending.
-No production certificate replacement or end-to-end acceptance is claimed.
+The deployment EST listener exposes /.well-known/est/cacerts, simpleenroll and
+simplereenroll. Bootstrap uses Basic canonicalSerial:sharedKey; renewal uses the
+AP certificate/key. The actual AP native EST client handles both.
 
-The normal portal flow is select AP → Onboard. `onboarding.py` stores an atomic,
-audited lifecycle approval and durable job. Approval has no operator time window,
-survives restarts, and ends on completion or cancellation. Ownership changes
-cannot inherit it. The current deployed job state truthfully waits for controller
-setup; the unattended worker and AP installation/rollback are not yet deployed.
-No CSR, grant token or qualification form is part of the normal user flow.
+Root-owned /certificates/est.json contains server and tls_ca. Root600
+/certificates/est-bootstrap.conf contains curl Basic credentials, without shell
+evaluation or a password in arguments. Native mount_certs runs before reading
+these settings; normal overlay boots may not have mounted that volume yet.
+
+Runtime identity is /etc/ucentral/operational.pem, client issuer trust is
+operational.ca, and durable copies live under /certificates. Renewal validates
+subject, unique local key, expiry, client purpose and issuer chain before atomic
+replacement. Gateway SERVER trust is independent: an approved public endpoint
+can use the shipped system CA bundle; a private endpoint needs separately
+approved trust. Hostname validation stays enabled. Native cloud discovery owns
+expiry scheduling and reconnection; there is no separate renewal worker or
+activation nonce handshake.
+
+The unused per-AP installer-key implementation is removed. Historical isolated
+policy/activation test modules are not enabled by portal_runtime and are not a
+production protocol or a migration prerequisite. Useful generic qualification,
+cryptography and recovery coverage remains available.
+
+## Verification and migration gate
+
+Run python3 -B -m unittest discover -q in this directory with cryptography50 or
+compatible and loopback network permission. Tests cover real TLS EST, one shared
+key with100 unique AP keys/certificates, concurrent binding, retry, rotation,
+cancellation, independent source qualification, native commands and offline CA
+recovery. Test authorities are disposable; tests do not read production keys.
+
+The reserved E410 passed actual old-CA to new-CA renewal, subsequent renewal,
+failed-service identity preservation, reboot persistence, automatic certificate
+volume mounting after reboot, gateway authentication and resumed health100.
+The original unique AP key was unchanged. Initial client parsing/validation and
+persistence also passed an isolated on-AP ucode fixture with synthetic transport
+responses; this is not a flashed migration proof.
+
+Full OEM/stock migration handoff remains unfinished. The stock bridge requires
+an empty shared certificate store, so pre-staging native enrollment there before
+the writer is invalid. Family owners must qualify installer-created identity
+handoff across sysupgrade -n, preserving no-old-config policy, active rollback
+bank and existing bank-health checks. Local completion uses a fresh sole native
+client, validated intended identity and newly received/applied configuration
+from that session; stale connected/config data is insufficient. Portal gateway
+corroboration remains independent and requires no installer Root credential.
+Firmware builds remain held until that handoff is tested. A real signed-in Root
+portal renewal click is a separate user verification step.

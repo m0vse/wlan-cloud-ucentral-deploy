@@ -94,12 +94,12 @@ class Issuer:
             raise ValueError("root forbids device issuer")
 
     @staticmethod
-    def csr(device, data):
+    def csr(device, data, subject=None):
         EnrollmentStore.check_serial(device)
         if not isinstance(data, bytes) or len(data) > 16384:
             raise ValueError("invalid CSR size")
         csr = x509.load_pem_x509_csr(data)
-        if not csr.is_signature_valid or csr.subject != x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, device)]):
+        if not csr.is_signature_valid or csr.subject != (subject if subject is not None else x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, device)])):
             raise ValueError("CSR identity or proof rejected")
         key = csr.public_key()
         if not ((isinstance(key, ec.EllipticCurvePublicKey) and key.curve.name == "secp256r1") or
@@ -119,11 +119,19 @@ class Issuer:
         self.store.check_serial(device)
         root = x509.load_pem_x509_certificate(trusted_root_pem)
         root.verify_directly_issued_by(root)
-        if not root.extensions.get_extension_for_class(x509.BasicConstraints).value.ca or not root.extensions.get_extension_for_class(x509.KeyUsage).value.key_cert_sign:
+        if not root.extensions.get_extension_for_class(x509.BasicConstraints).value.ca:
             raise ValueError("Invalid retained CA")
+        # A pre-existing pinned CA may omit KeyUsage (valid legacy X.509).
+        # If it is present it must permit signing. New CAs remain strict.
+        try:
+            if not root.extensions.get_extension_for_class(x509.KeyUsage).value.key_cert_sign:
+                raise ValueError("Invalid retained CA key usage")
+        except x509.ExtensionNotFound:
+            pass
         peer = x509.load_pem_x509_certificate(certificate_pem)
         peer.verify_directly_issued_by(root)
-        if peer.subject != x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, device)]):
+        names = peer.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+        if len(names) != 1 or names[0].value != device:
             raise ValueError("Retained certificate identity mismatch")
         if peer.extensions.get_extension_for_class(x509.BasicConstraints).value.ca or ExtendedKeyUsageOID.CLIENT_AUTH not in peer.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value:
             raise ValueError("Retained certificate client purpose required")
@@ -231,17 +239,20 @@ class Issuer:
             raise ValueError("invalid client purpose")
         return row["device"]
 
-    def renew(self, peer_der, csr_pem, attempt):
+    def renew(self, peer_der, csr_pem, attempt, native_subject=False):
         if not isinstance(attempt, str) or not re.fullmatch(r"[0-9a-f]{32}", attempt):
             raise ValueError("fresh renewal attempt required")
         peer = x509.load_der_x509_certificate(peer_der)  # supplied by authenticated TLS transport
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             device = self._check_peer(db, peer)
-            csr = self.csr(device, csr_pem)
+            csr = self.csr(device, csr_pem, peer.subject if native_subject else None)
             if public(peer.public_key()) != public(csr.public_key()):
                 raise ValueError("renewal key differs from authenticated key")
-            request = fingerprint(peer) + hashlib.sha256(csr.public_bytes(serialization.Encoding.DER)).hexdigest() + self.authority + attempt
+            # Native EST retries can regenerate an ECDSA signature for the same
+            # verified subject/key. Cache the authenticated request semantics.
+            request_data = (csr.subject.public_bytes() + public(csr.public_key())) if native_subject else csr.public_bytes(serialization.Encoding.DER)
+            request = fingerprint(peer) + hashlib.sha256(request_data).hexdigest() + self.authority + attempt
             cached = db.execute("SELECT response FROM renewal_replies WHERE request=?", (request,)).fetchone()
             if cached:
                 self._check_peer(db, x509.load_pem_x509_certificate(cached[0]))
