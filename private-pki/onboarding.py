@@ -30,8 +30,12 @@ class Onboarding:
                 CREATE TABLE IF NOT EXISTS onboarding_grants(
                     job TEXT NOT NULL, digest BLOB PRIMARY KEY);
             ''')
+            if 'kind' not in {row[1] for row in db.execute('PRAGMA table_info(onboarding_jobs)')}:
+                db.execute("ALTER TABLE onboarding_jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'onboard'")
 
-    def start(self, actor, serial, authorization):
+    def start(self, actor, serial, authorization, kind="onboard"):
+        if kind not in ("onboard", "move-ca", "renew"):
+            raise ValueError("Invalid AP operation")
         self.store.check_serial(serial)
         inventory = self.controller.inventory(serial, authorization)
         ownership = snapshot(self.controller, inventory, authorization)
@@ -40,15 +44,15 @@ class Onboarding:
             db.execute('BEGIN IMMEDIATE')
             previous = db.execute("SELECT * FROM onboarding_jobs WHERE serial=? AND state IN ('waiting','running')", (serial,)).fetchone()
             if previous:
-                if previous['ownership'] != encoded:
+                if previous['ownership'] != encoded or previous['kind'] != kind:
                     raise ValueError('AP ownership changed; cancel the previous request before onboarding again')
                 return self.public(previous)
             self.lifecycle.approve(actor, serial, ownership, True, True, False, db)
             stamp, identity = int(self.store.clock()), secrets.token_hex(16)
-            db.execute('INSERT INTO onboarding_jobs VALUES (?,?,?,?,?,?,?,?)',
-                (identity, serial, actor, encoded, 'waiting', 'Waiting for controller setup.', stamp, stamp))
+            db.execute('INSERT INTO onboarding_jobs(id,serial,actor,ownership,state,message,created,updated,kind) VALUES (?,?,?,?,?,?,?,?,?)',
+                (identity, serial, actor, encoded, 'waiting', 'Waiting for controller setup.' if kind == 'onboard' else ('Waiting for renewal setup; current certificate remains in use.' if kind == 'renew' else 'Waiting for CA migration setup; current certificate remains in use.'), stamp, stamp, kind))
             db.execute('INSERT INTO operator_audit(stamp,actor,action,target) VALUES (?,?,?,?)',
-                (stamp, actor, 'onboarding-requested', serial))
+                (stamp, actor, 'certificate-renewal-requested' if kind == 'renew' else 'ca-migration-requested' if kind == 'move-ca' else 'onboarding-requested', serial))
             row = db.execute('SELECT * FROM onboarding_jobs WHERE id=?', (identity,)).fetchone()
             return self.public(row)
 
@@ -73,7 +77,7 @@ class Onboarding:
 
     @staticmethod
     def public(row):
-        return {field: row[field] for field in ('id', 'serial', 'state', 'message', 'created', 'updated')}
+        return {field: row[field] for field in ('id', 'serial', 'state', 'message', 'created', 'updated', 'kind')}
 
     def list(self):
         with self.store.connect() as db:

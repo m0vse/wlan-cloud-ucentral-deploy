@@ -31,10 +31,10 @@ class PortalAdministration(Administration):
             self.retained.append(root)
 
     def call(self, authorization, operation, request):
-        if operation in ('onboard', 'cancel-onboarding'):
+        if operation in ('onboard', 'move-ca', 'renew', 'cancel-onboarding'):
             actor = self.controller.root(authorization)
-            if operation == 'onboard' and isinstance(request, dict) and set(request) == {'serial'}:
-                return self.onboarding.start(actor, request['serial'], authorization)
+            if operation in ('onboard', 'move-ca', 'renew') and isinstance(request, dict) and set(request) == {'serial'}:
+                return self.onboarding.start(actor, request['serial'], authorization, operation)
             if operation == 'cancel-onboarding' and isinstance(request, dict) and set(request) == {'job'}:
                 return self.onboarding.cancel(actor, request['job'])
             raise Denied(400, 'Invalid onboarding request')

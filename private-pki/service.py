@@ -122,7 +122,7 @@ def handler(issuer, administration=None, mode="ap", activation=None, installer=N
                 operation = self.path[len(prefix):]
                 if self.command == "GET" and operation in ("status", "audit"):
                     request = {}
-                elif self.command == "POST" and operation in ("authorize", "evidence", "approve-hardware", "approve-qualification", "approve-runtime", "approve-identity", "retirement-review", "onboard", "cancel-onboarding"):
+                elif self.command == "POST" and operation in ("authorize", "evidence", "approve-hardware", "approve-qualification", "approve-runtime", "approve-identity", "retirement-review", "onboard", "move-ca", "renew", "cancel-onboarding"):
                     if self.headers.get("Content-Type") != "application/json":
                         raise Denied(415, "JSON required")
                     request = json_object(self.body())

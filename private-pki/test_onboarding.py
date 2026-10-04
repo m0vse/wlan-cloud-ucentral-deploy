@@ -43,6 +43,21 @@ class OnboardingTests(unittest.TestCase):
         second = jobs.start('root', self.device, 'Bearer synthetic')
         self.assertNotEqual(first['id'], second['id'])
 
+    def test_ca_migration_is_distinct_durable_and_does_not_issue(self):
+        jobs, inventory, controller = self.prepare()
+        first = jobs.start('root', self.device, 'Bearer synthetic', 'move-ca')
+        self.assertEqual(first['kind'], 'move-ca')
+        self.clock += timedelta(days=90)
+        restored = Onboarding(self.load().store, controller)
+        self.assertEqual(restored.start('root', self.device, 'Bearer synthetic', 'move-ca')['id'], first['id'])
+        with self.assertRaises(ValueError):
+            restored.start('root', self.device, 'Bearer synthetic')
+        with self.issuer.store.connect() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM issued').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT count(*) FROM grants').fetchone()[0], 0)
+        restored.cancel('root', first['id'])
+        self.assertEqual(restored.start('root', self.device, 'Bearer synthetic')['kind'], 'onboard')
+
     def test_failed_job_commit_does_not_leave_a_lifecycle_approval(self):
         jobs, inventory, controller = self.prepare()
         with self.issuer.store.connect() as db:
