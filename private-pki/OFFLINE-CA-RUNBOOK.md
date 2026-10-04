@@ -67,3 +67,19 @@ read service account is required. Full fleet migration and model-specific
 installer handoff/rollback qualification remain required before retiring trust.
 No real root creation, old trust removal or online root-key storage is authorized
 by running the synthetic tests.
+
+## EST HTTPS identity renewal
+
+The EST HTTPS server certificate is independent of the AP client CA hierarchy.
+`refresh_est_tls.py` reads the existing protected deployment ACME store and selects
+exactly one approved hostname. It validates expiry, hostname and certificate/key
+matching before replacing the HTTPS pair. It restarts only the EST container when
+that pair changes; unchanged certificates do not cause a restart. A private
+transaction journal restores the previous pair after interruption or restart
+failure. No root, device issuer or AP private key is read by this helper.
+
+The deployed host has an hourly systemd refresh timer following the existing ACME
+renewal. The initial run passed with unchanged identity and no restart. Synthetic
+renewal, wrong hostname/key, restart failure and interrupted replacement recovery
+passed. Running the unchanged check does not claim a forced live ACME issuance.
+Review timer status and EST HTTPS verification as part of service maintenance.
