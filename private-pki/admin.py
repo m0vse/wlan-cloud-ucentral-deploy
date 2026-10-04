@@ -64,10 +64,11 @@ class Controller:
 
 
 class Administration:
-    def __init__(self, issuer, controller, qualification=None, registry=None):
+    def __init__(self, issuer, controller, qualification=None, registry=None, fleet_gate=None):
         self.issuer, self.controller = issuer, controller
         self.qualification = qualification or (lambda device, inventory: False)
         self.registry = registry
+        self.fleet_gate = fleet_gate
         with issuer.store.connect() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS operator_audit(
                 id INTEGER PRIMARY KEY, stamp INTEGER NOT NULL,
@@ -82,6 +83,10 @@ class Administration:
         actor = self.controller.root(authorization)
         if not isinstance(request, dict):
             raise Denied(400, "Invalid request")
+        if operation == "retirement-review" and set(request) == {"root"}:
+            if self.fleet_gate is None:
+                raise Denied(503, "Complete fleet review adapter unavailable")
+            return self.fleet_gate.review(authorization, request["root"])
         if operation == "approve-identity" and set(request) == {"serial", "approved", "enabled", "retired"}:
             guard = self.issuer.authorization_guard
             if guard is None:

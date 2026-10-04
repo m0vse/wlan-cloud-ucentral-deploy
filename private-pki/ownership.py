@@ -57,7 +57,7 @@ def snapshot(controller, inventory, authorization):
     subscriber = None
     if direct['subscriber']:
         user = controller.fetch(16001, f'subuser/{direct["subscriber"]}', authorization)
-        if user.get('id') != direct['subscriber'] or type(user.get('suspended')) is not bool or type(user.get('blackListed')) is not bool or user['suspended'] or user['blackListed']:
+        if user.get('id') != direct['subscriber'] or user.get('userRole') != 'subscriber' or type(user.get('suspended')) is not bool or type(user.get('blackListed')) is not bool or user['suspended'] or user['blackListed']:
             raise ValueError('Subscriber identity or status refused')
         owner = identifier(user.get('owner'))
         # The subscriber's recorded owner must exist too, and be active.

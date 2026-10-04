@@ -40,8 +40,16 @@ independent of migration qualification. Authoritative manufacturing evidence
 uses the private portal-managed registry joined to existing provisioning
 inventory, never guessed from deviceType, locale or radio country.
 
-Run `python3 -B -m unittest -v test_issuer test_admin test_service test_policy_publisher test_activation test_gateway_reader test_offline_ca test_qualification_registry test_ownership test_lifecycle test_legacy_import test_authorization_guard` with
-cryptography 50.0.1 or compatible. Thirty-five distinct tests pass locally including
+`fleet_gate.py` provides a read-only root retirement preview. It checks complete
+count-verified paginated inventory and gateway lists, repeats the census to catch
+identity changes, and includes ledger-only devices. Offline status never retires
+an AP. Active identities require a current verified new-root session and recorded
+renewal acceptance; explicitly retired identities must retain the same record and
+ownership and have confirmed gateway disconnection. This preview does not remove
+trust or replace the final deployment gate.
+
+Run `python3 -B -m unittest -v test_issuer test_admin test_service test_policy_publisher test_activation test_gateway_reader test_offline_ca test_qualification_registry test_ownership test_lifecycle test_legacy_import test_authorization_guard test_fleet_gate` with
+cryptography 50.0.1 or compatible. Thirty-nine distinct tests pass locally including
 real loopback TLS bootstrap, client renewal and dual-root migration. The rollover
 fixture uses same-name authorities with explicit SKI/AKI binding and verifies
 old-only trust rejection and old-client/new-issuer reissuance. Loopback listeners require host

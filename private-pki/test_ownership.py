@@ -38,9 +38,13 @@ class OwnershipTests(unittest.TestCase):
             snapshot(controller, inventory, 'Bearer synthetic')
         inventory, records, controller = self.fixtures()
         inventory['subscriber'] = 'subscriber-id'
-        records[(16001, 'subuser/subscriber-id')] = {'id': 'subscriber-id', 'owner': 'operator-id', 'suspended': False, 'blackListed': False}
+        records[(16001, 'subuser/subscriber-id')] = {'id': 'subscriber-id', 'owner': 'operator-id', 'userRole': 'subscriber', 'suspended': False, 'blackListed': False}
         records[(16001, 'user/operator-id')] = {'id': 'operator-id', 'suspended': False, 'blackListed': False}
         self.assertEqual(snapshot(controller, inventory, 'Bearer synthetic')['subscriber']['owner'], 'operator-id')
+        records[(16001, 'subuser/subscriber-id')]['userRole'] = 'root'
+        with self.assertRaises(ValueError):
+            snapshot(controller, inventory, 'Bearer synthetic')
+        records[(16001, 'subuser/subscriber-id')]['userRole'] = 'subscriber'
         for key in ('suspended', 'blackListed'):
             records[(16001, 'subuser/subscriber-id')][key] = True
             with self.assertRaises(ValueError):
