@@ -60,6 +60,12 @@ class OperatingBandTests(unittest.TestCase):
         self.assertEqual(row['ipv6Addresses'], ['fd00::123'])
         self.assertEqual(row['ip'], '192.168.99.119, fd00::123')
 
+    def test_unauthorized_stations_are_not_connected_clients(self):
+        clients = [{'station': 'failed', 'authorized': False},
+                   {'station': 'connected', 'authorized': True}, {'station': 'legacy'}]
+        state = {'interfaces': [{'ssids': [{'associations': clients}]}]}
+        self.assertEqual({row['mac'] for row in server.associations(state).values()}, {'connected', 'legacy'})
+
 
 if __name__ == '__main__':
     unittest.main()

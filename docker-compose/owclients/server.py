@@ -117,6 +117,8 @@ def associations(state):
                     radio = radios[int(match[1])]
             band = operating_band(radio)
             for client in ssid.get("associations") or []:
+                if client.get("authorized") is False:
+                    continue  # Authentication attempts are not connected clients.
                 mac = str(client.get("station", "")).lower()
                 if not mac:
                     continue
