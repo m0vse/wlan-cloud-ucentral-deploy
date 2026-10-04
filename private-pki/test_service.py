@@ -1,4 +1,5 @@
 import base64
+import json
 from datetime import timedelta
 import http.client
 import ssl
@@ -54,7 +55,8 @@ class ServiceTests(unittest.TestCase):
         server_tls.load_cert_chain(self.path / "tls.pem", self.path / "tls.key")
         server_tls.load_verify_locations(self.path / "root")
         server_tls.verify_mode = ssl.CERT_OPTIONAL
-        url = self.start(handler(self.issuer), server_tls)
+        installer = Mock()
+        url = self.start(handler(self.issuer, installer=installer), server_tls)
         client_tls = ssl.create_default_context(cafile=str(self.path / "root"))
         der_csr = x509.load_pem_x509_csr(self.csr).public_bytes(serialization.Encoding.DER)
         body = base64.b64encode(der_csr)
@@ -71,6 +73,13 @@ class ServiceTests(unittest.TestCase):
         leaf = next(c for c in certs if c.subject == fixtures.name(self.device))
         (self.path / "client.pem").write_bytes(fixtures.pem(leaf) + fixtures.pem(self.authority.device))
         client_tls.load_cert_chain(self.path / "client.pem", self.path / "client.key")
+        installer.bootstrap.return_value = fixtures.pem(leaf)
+        installer_body = json.dumps({'serial': self.device, 'csr': self.csr.decode('ascii')}).encode()
+        installer_headers = {'Content-Type': 'application/json', 'X-API-Key': 'synthetic-test-key'}
+        send('/onboarding/bootstrap', installer_headers, request_body=installer_body)
+        installer.bootstrap.assert_called_with('synthetic-test-key', self.device, self.csr)
+        with self.assertRaises(urllib.error.HTTPError):
+            send('/api/v1/pki/onboard', installer_headers, request_body=installer_body)
         renew_headers = {"Content-Type": "application/pkcs10", "X-Renewal-Attempt": "a" * 32}
         reply = send("/.well-known/est/simplereenroll", renew_headers)
         renewed = next(c for c in pkcs7.load_der_pkcs7_certificates(base64.b64decode(reply)) if c.subject == fixtures.name(self.device))

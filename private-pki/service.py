@@ -66,7 +66,7 @@ def pkcs7_reply(issuer, certificate=None):
     return base64.b64encode(pkcs7.serialize_certificates(certificates, serialization.Encoding.DER))
 
 
-def handler(issuer, administration=None, mode="ap", activation=None):
+def handler(issuer, administration=None, mode="ap", activation=None, installer=None):
     if mode not in ("ap", "admin") or (mode == "admin" and administration is None):
         raise ValueError("invalid listener mode")
     rate = RateLimit(global_limit=600, identity_limit=60) if mode == 'admin' else RateLimit()
@@ -135,6 +135,18 @@ def handler(issuer, administration=None, mode="ap", activation=None):
                 return
             if not isinstance(self.connection, ssl.SSLSocket):
                 raise Denied(403, "TLS required")
+            if self.command == "POST" and self.path == "/onboarding/bootstrap":
+                if installer is None:
+                    raise Denied(503, "Installer adapter unavailable")
+                keys = self.headers.get_all("X-API-Key", [])
+                if len(keys) != 1 or self.headers.get("Content-Type") != "application/json":
+                    raise Denied(403, "Installer authorization required")
+                request = json_object(self.body())
+                if set(request) != {"serial", "csr"} or not isinstance(request["csr"], str):
+                    raise Denied(400, "Invalid installer request")
+                certificate = installer.bootstrap(keys[0], request["serial"], request["csr"].encode("ascii"))
+                self.reply(200, pkcs7_reply(issuer, certificate), "application/pkcs7-mime; smime-type=certs-only")
+                return
             if self.command == "POST" and self.path in ("/activation/challenge", "/activation/verify"):
                 if activation is None:
                     raise Denied(503, "Management acceptance adapter unavailable")
