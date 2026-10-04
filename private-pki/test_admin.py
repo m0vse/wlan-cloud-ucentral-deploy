@@ -22,7 +22,7 @@ class AdminTests(unittest.TestCase):
     def test_inventory_required_audit_actor_no_token_and_status(self):
         controller = Mock()
         controller.root.return_value = "synthetic-operator"
-        admin = Administration(self.issuer, controller)
+        admin = Administration(self.issuer, controller, qualification=lambda device, inventory: True)
         request = {"serial": self.device, "csr": self.csr.decode()}
         grant = admin.call("Bearer synthetic", "authorize", request)
         self.issuer.bootstrap(self.device, grant["authorization"], self.csr)
@@ -35,6 +35,18 @@ class AdminTests(unittest.TestCase):
         self.assertEqual(status["gatewayEnforcement"], "not-integrated")
         with self.assertRaises(Denied):
             admin.call("Bearer synthetic", "revoke", {"fingerprint": "a" * 64})
+
+    def test_unqualified_model_refuses_before_mutation(self):
+        controller = Mock()
+        controller.root.return_value = "synthetic-operator"
+        admin = Administration(self.issuer, controller)
+        with patch.object(self.issuer, "approve") as approve:
+            with self.assertRaises(Denied):
+                admin.call("Bearer synthetic", "authorize", {"serial": self.device, "csr": self.csr.decode()})
+            approve.assert_not_called()
+        with self.issuer.store.connect() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM grants").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM operator_audit").fetchone()[0], 0)
 
     def test_sec_validation_rejects_ui_role_and_insecure_origin(self):
         controller = Controller("https://controller.example.invalid")

@@ -62,8 +62,9 @@ class Controller:
 
 
 class Administration:
-    def __init__(self, issuer, controller):
+    def __init__(self, issuer, controller, qualification=None):
         self.issuer, self.controller = issuer, controller
+        self.qualification = qualification or (lambda device, inventory: False)
         with issuer.store.connect() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS operator_audit(
                 id INTEGER PRIMARY KEY, stamp INTEGER NOT NULL,
@@ -105,7 +106,9 @@ class Administration:
                 raise Denied(400, "Invalid CSR")
             # Validate CSR before approval, then require existing controller inventory.
             self.issuer.csr(device, csr.encode("ascii"))
-            self.controller.inventory(device, authorization)
+            inventory = self.controller.inventory(device, authorization)
+            if self.qualification(device, inventory) is not True:
+                raise Denied(403, "Exact model migration is not qualified")
             self._audit(actor, "enrollment-authorize-requested", device)
             self.issuer.approve(device)
             token = self.issuer.authorize(device, csr.encode("ascii"))

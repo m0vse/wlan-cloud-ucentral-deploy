@@ -64,7 +64,7 @@ def pkcs7_reply(issuer, certificate=None):
     return base64.b64encode(pkcs7.serialize_certificates(certificates, serialization.Encoding.DER))
 
 
-def handler(issuer, administration=None, mode="ap"):
+def handler(issuer, administration=None, mode="ap", activation=None):
     if mode not in ("ap", "admin") or (mode == "admin" and administration is None):
         raise ValueError("invalid listener mode")
     rate = RateLimit()
@@ -128,6 +128,20 @@ def handler(issuer, administration=None, mode="ap"):
                 return
             if not isinstance(self.connection, ssl.SSLSocket):
                 raise Denied(403, "TLS required")
+            if self.command == "POST" and self.path in ("/activation/challenge", "/activation/verify"):
+                if activation is None:
+                    raise Denied(503, "Management acceptance adapter unavailable")
+                if self.headers.get("Content-Type") != "application/json" or not self.peer():
+                    raise Denied(403, "Authenticated activation request required")
+                request = json_object(self.body())
+                if self.path == "/activation/challenge" and not request:
+                    result = activation.challenge(self.peer())
+                elif self.path == "/activation/verify" and set(request) == {"nonce"}:
+                    result = activation.verify(self.peer(), request["nonce"])
+                else:
+                    raise Denied(400, "Invalid activation request")
+                self.reply(200, json.dumps(result).encode())
+                return
             if self.command == "GET" and self.path == "/.well-known/est/cacerts":
                 self.reply(200, pkcs7_reply(issuer), "application/pkcs7-mime; smime-type=certs-only")
                 return

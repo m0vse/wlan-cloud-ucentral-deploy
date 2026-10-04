@@ -19,8 +19,26 @@ come from the TLS socket. No trust is placed in forwarded certificate headers.
 There is no production startup command or public binding. Revocation controls
 remain unavailable in administration until gateway enforcement exists.
 
-Run `python3 -B -m unittest -v test_issuer test_admin test_service` with
-cryptography 50.0.1 or compatible. Sixteen distinct tests pass locally including
+`policy_publisher.py` atomically publishes short-lived, versioned public leaf
+pins from the private ledger. Revoked, disabled and expired identities are
+excluded. A gateway must mount the directory, rather than an individual file,
+to observe atomic replacement. `activation.py` consumes a short-lived challenge
+only after a trusted gateway reader reports a fresh, verified session bound to
+the exact serial, leaf and nonce. Challenge issuance and TLS connection alone
+are insufficient. The current activation tests use a synthetic gateway reader;
+`gateway_reader.py` adds a hostname-verified HTTPS gateway reader using a
+protected deployment credential. Production credential provisioning, routing
+and AP activation remain pending.
+
+Migration grants also require an exact qualification callback before any
+approval, grant or audit mutation. Its default denies migration. OEM and stock
+OpenWrt qualification are separate operations; normal authenticated renewal is
+independent of migration qualification. Authoritative manufacturing evidence
+requires a private portal-managed registry joined to existing provisioning
+inventory, never guessed from deviceType, locale or radio country.
+
+Run `python3 -B -m unittest -v test_issuer test_admin test_service test_policy_publisher test_activation test_gateway_reader` with
+cryptography 50.0.1 or compatible. Twenty-two distinct tests pass locally including
 real loopback TLS bootstrap, client renewal and dual-root migration. The rollover
 fixture uses same-name authorities with explicit SKI/AKI binding and verifies
 old-only trust rejection and old-client/new-issuer reissuance. Loopback listeners require host
