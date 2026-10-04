@@ -13,6 +13,37 @@ class NativeManagement:
                 job TEXT PRIMARY KEY, previous_leaf TEXT NOT NULL,
                 command TEXT, state TEXT NOT NULL)''')
 
+            db.execute('''CREATE TABLE IF NOT EXISTS certificate_deletions(
+                fingerprint TEXT PRIMARY KEY, actor TEXT NOT NULL, deleted INTEGER NOT NULL)''')
+
+    def delete(self, actor, fingerprint, authorization):
+        import re
+        if not isinstance(fingerprint, str) or not re.fullmatch('[0-9a-f]{64}', fingerprint):
+            raise Denied(400, 'Invalid certificate reference')
+        with self.issuer.store.connect() as db:
+            row = db.execute('SELECT device FROM issued WHERE fingerprint=?', (fingerprint,)).fetchone()
+        if row is None:
+            raise Denied(404, 'Certificate not found')
+        serial = row['device']
+        inventory = self.controller.inventory(serial, authorization)
+        ownership = snapshot(self.controller, inventory, authorization)
+        connection = self.connection(serial, authorization)
+        with self.issuer.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            self.jobs.lifecycle.check(serial, ownership, db)
+            current = self.matching_leaf(serial, connection, db)
+            if current is None:
+                raise Denied(409, 'Connect the AP before deleting an unused certificate')
+            if current['fingerprint'] == fingerprint:
+                raise Denied(409, 'This certificate is currently in use')
+            if db.execute("SELECT 1 FROM onboarding_jobs WHERE serial=? AND state IN ('waiting','running')", (serial,)).fetchone():
+                raise Denied(409, 'Wait for certificate renewal to finish')
+            # Retain signing history for renewal and rollback; remove only the
+            # unused portal entry. A signed certificate cannot be unsigned.
+            db.execute('INSERT OR IGNORE INTO certificate_deletions VALUES (?,?,?)',
+                       (fingerprint, actor, int(self.issuer.clock().timestamp())))
+        return {'deleted': fingerprint}
+
     def connection(self, serial, authorization):
         device = self.controller.fetch(16002, f'device/{serial}?completeInfo=true', authorization)
         return device.get('connectionInfo', {})
@@ -24,13 +55,14 @@ class NativeManagement:
         # session metadata matching, not a claim of DER fingerprint evidence.
         candidates = list(db.execute('SELECT * FROM issued WHERE device=? AND revoked=0 AND expires=?',
                                     (serial, connection.get('certificateExpiryDate', -1))))
+        matches = []
         for row in candidates:
             cert = x509.load_pem_x509_certificate(row['certificate'])
             if cert.issuer.rfc4514_string() == connection.get('certificateIssuerName'):
                 try: self.issuer._check_peer(db, cert)
                 except ValueError: continue
-                return row
-        return None
+                matches.append(row)
+        return matches[0] if len(matches) == 1 else None
 
     def request(self, actor, serial, authorization, operation):
         self.issuer.store.check_serial(serial)
@@ -55,9 +87,16 @@ class NativeManagement:
                        (int(self.issuer.clock().timestamp()), job['id']))
         try:
             result = self.controller.request(16002, f'device/{serial}/reenroll', authorization,
-                    method='POST', body={'serialNumber':serial, 'when':0}, timeout=30)
-            if not isinstance(result, dict) or result.get('errorCode') != 0 or not result.get('UUID'):
+                    method='POST', body={'serial':serial, 'when':0}, timeout=30)
+            if not isinstance(result, dict) or 'errorCode' not in result or not result.get('UUID'):
                 raise ValueError('Native renewal did not confirm success')
+            if result['errorCode'] != 0:
+                with self.issuer.store.connect() as db:
+                    db.execute('UPDATE native_commands SET command=?,state=? WHERE job=?',
+                               (result['UUID'], 'failed', job['id']))
+                    db.execute("UPDATE onboarding_jobs SET state='failed',message='The AP reported renewal failed. Retry after checking its connection.',updated=? WHERE id=?",
+                               (int(self.issuer.clock().timestamp()), job['id']))
+                return next(item for item in self.jobs.list() if item['id'] == job['id'])
             with self.issuer.store.connect() as db:
                 db.execute('UPDATE native_commands SET command=?,state=? WHERE job=?',
                            (result['UUID'], 'reconnecting', job['id']))
@@ -96,6 +135,13 @@ class NativeManagement:
                 continue
             with self.issuer.store.connect() as db:
                 matched = self.matching_leaf(serial, connections.get(serial, {}), db)
+                if matched:
+                    cert['superseded'] = matched['fingerprint'] != cert['fingerprint']
+                    cert['canDelete'] = cert['superseded'] and not db.execute(
+                        "SELECT 1 FROM onboarding_jobs WHERE serial=? AND state IN ('waiting','running')",
+                        (serial,)).fetchone()
+                    if matched['fingerprint'] == cert['fingerprint']:
+                        db.execute('DELETE FROM certificate_deletions WHERE fingerprint=?', (cert['fingerprint'],))
                 if matched and matched['fingerprint'] == cert['fingerprint']:
                     cert['nativeConnected'] = True
                     cert['nativeSessionId'] = connections[serial].get('sessionId')
@@ -104,3 +150,7 @@ class NativeManagement:
                         if matched['fingerprint'] != job['previous_leaf']:
                             db.execute("UPDATE onboarding_jobs SET state='complete',message='Certificate renewed and AP reconnected.',updated=? WHERE id=?",
                                        (int(self.issuer.clock().timestamp()),job['id']))
+
+        with self.issuer.store.connect() as db:
+            deleted = {row[0] for row in db.execute('SELECT fingerprint FROM certificate_deletions')}
+        certificates[:] = [cert for cert in certificates if cert['fingerprint'] not in deleted]

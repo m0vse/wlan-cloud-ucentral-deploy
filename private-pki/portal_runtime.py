@@ -42,6 +42,13 @@ class PortalAdministration(Administration):
             self.retained.append(root)
 
     def call(self, authorization, operation, request):
+        if operation == 'delete-certificate':
+            actor = self.controller.root(authorization)
+            if not self.native:
+                raise Denied(503, 'Certificate management is not enabled')
+            if not isinstance(request, dict) or set(request) != {'fingerprint'}:
+                raise Denied(400, 'Invalid certificate deletion request')
+            return self.native.delete(actor, request['fingerprint'], authorization)
         if operation in ('create-enrollment-key','cancel-enrollment-key','rotate-enrollment-key'):
             actor = self.controller.root(authorization)
             if not self.campaigns:
@@ -107,6 +114,9 @@ class PortalAdministration(Administration):
                             break
                     if not authority:
                         raise ValueError('observed certificate outside retained trust')
+                    with self.issuer.store.connect() as db:
+                        if self.native and db.execute('SELECT 1 FROM certificate_deletions WHERE fingerprint=?', (fingerprint(leaf),)).fetchone():
+                            continue
                     if any(c['fingerprint'] == fingerprint(leaf) for c in result['certificates']):
                         continue
                     result['certificates'].append({'fingerprint': fingerprint(leaf),
