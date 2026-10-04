@@ -1,5 +1,6 @@
 """Read-only association view. Authorisation is verified by owsec on every request."""
 import concurrent.futures
+import ipaddress
 import json
 import math
 import os
@@ -70,6 +71,38 @@ def operating_band(radio):
     return next(iter(bands)) if len(bands) == 1 else "Unknown"
 
 
+def usable_addresses(values, version):
+    """Keep observed addresses, preferring routable scope over link-local scope."""
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, list):
+        return []
+    parsed = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        try:
+            address = ipaddress.ip_address(value.strip())
+        except ValueError:
+            continue
+        if address.version != version or address.is_unspecified or address.is_loopback or address.is_multicast:
+            continue
+        if str(address) == "255.255.255.255":
+            continue
+        if address not in parsed:
+            parsed.append(address)
+    preferred = [address for address in parsed if not address.is_link_local]
+    return [str(address) for address in preferred or parsed]
+
+
+def client_addresses(client, observed, version):
+    direct = usable_addresses(client.get(f"ipaddr_v{version}"), version)
+    fallback = usable_addresses(observed.get(f"ipv{version}_addresses"), version)
+    # A stale link-local association must not conceal a usable neighbour address.
+    preferred_direct = usable_addresses([v for v in direct if not ipaddress.ip_address(v).is_link_local], version)
+    return preferred_direct or usable_addresses(direct + fallback, version)
+
+
 def associations(state):
     radios = state.get("radios") or []
     result = {}
@@ -88,10 +121,13 @@ def associations(state):
                 if not mac:
                     continue
                 bssid = str(ssid.get("bssid") or client.get("bssid") or ssid.get("iface") or "")
-                ip = client.get("ipaddr_v4") or ", ".join(addresses.get(mac, {}).get("ipv4_addresses") or [])
+                ipv4 = client_addresses(client, addresses.get(mac, {}), 4)
+                ipv6 = client_addresses(client, addresses.get(mac, {}), 6)
+                ip = ", ".join(ipv4 + ipv6)
                 result[(mac, bssid)] = {
                     "mac": mac, "bssid": bssid, "ssid": ssid.get("ssid", ""),
                     "band": band, "channel": radio.get("channel"), "ip": ip,
+                    "ipv4Addresses": ipv4, "ipv6Addresses": ipv6,
                     "signal": number(client.get("rssi")),
                     "rxRate": number((client.get("rx_rate") or {}).get("bitrate")),
                     "txRate": number((client.get("tx_rate") or {}).get("bitrate")),
