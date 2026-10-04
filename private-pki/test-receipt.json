@@ -1,0 +1,25 @@
+{
+  "date": "2026-10-04",
+  "status": "isolated-issuer-foundation-tested-not-deployed",
+  "tests": 16,
+  "failures": 0,
+  "command": "python3 -B -m unittest -v test_issuer test_admin test_service",
+  "real_loopback_tls": true,
+  "client_renewal": true,
+  "dual_root_tls_overlap": true,
+  "gateway_enforcement": false,
+  "management_acceptance_proof": false,
+  "ap_activation": false,
+  "production_ca_created": false,
+  "source_sha256": {
+    "issuer.py": "2dd52ac2f5aaf40c0e5fe112876e275c863b51e9dff471cdb35f93ce493239e7",
+    "enrollment_store.py": "c260f80c6b8e28adf9ba02ba05cda6e9bf84b364f47a793063ccf41708b362d4",
+    "admin.py": "49129c5186d6eacb093cec58223ed21b310f123a65d133e3a02976a93bed8b86",
+    "service.py": "65f69509c4717a22a3c107340be9c6964f20e4fe973bd597ab1060e49d84ceee",
+    "test_fixtures.py": "570ed0df54535143c30dde51a96c5d5924d55ba7f96457ed41ffbf22a0d55435",
+    "test_issuer.py": "71f05b2c73528da84347afdb9a9138db2c2f1235eb7c8290ae5f2d0f6df32b38",
+    "test_admin.py": "63aaa706881034f3b6a1832b890459667dbe8a3bbb7b6bcc2d0148856cd13bfe",
+    "test_service.py": "bf62afdab3a8ac14d64dee691ce3c5ae13bbea70082b96b0c3fd22ba88e35cfa",
+    "requirements.txt": "4026896996503d662ae0d9b5db045d1d5ff511c681dbfc09f5d5a11ee06b28c5"
+  }
+}

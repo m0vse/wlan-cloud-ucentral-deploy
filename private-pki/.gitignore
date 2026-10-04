@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.pem
+*.key
+*.csr
+*.sqlite*
+*.db*
+private/
+deployment.json
