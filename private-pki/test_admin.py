@@ -61,6 +61,29 @@ class AdminTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 Controller(origin)
 
+    def test_portal_evidence_auth_inventory_versioning_and_audit(self):
+        from qualification_registry import Registry
+        from test_qualification_registry import RegistryTests
+        inventory, hardware, qualification, runtime = RegistryTests.fixtures(self)
+        controller = Mock()
+        controller.root.return_value = "synthetic-operator"
+        controller.inventory.return_value = inventory
+        registry = Registry(self.issuer.store)
+        admin = Administration(self.issuer, controller, registry=registry)
+        self.assertEqual(admin.call("Bearer synthetic", "approve-hardware", {"record": hardware})["version"], 1)
+        approved = admin.call("Bearer synthetic", "approve-qualification", {"record": qualification})
+        result = admin.call("Bearer synthetic", "approve-runtime", {"identity": approved["identity"], "record": runtime})
+        self.assertEqual(result["hardwareVersion"], 1)
+        records = admin.call("Bearer synthetic", "evidence", {"serial": self.device})
+        self.assertEqual(records["hardware"]["actor"], "synthetic-operator")
+        self.assertIsInstance(records["qualifications"][0]["record"], dict)
+        self.assertEqual(len(admin.call("Bearer synthetic", "audit", {})["events"]), 3)
+        before = self.issuer.store.path.read_bytes()
+        controller.root.side_effect = Denied(403, "refused")
+        with self.assertRaises(Denied):
+            admin.call("Bearer wrong", "approve-hardware", {"record": hardware})
+        self.assertEqual(self.issuer.store.path.read_bytes(), before)
+
 
 if __name__ == "__main__":
     unittest.main()

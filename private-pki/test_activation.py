@@ -35,8 +35,31 @@ class ActivationTests(unittest.TestCase):
         reply = verifier.verify(peer, challenge["nonce"])
         self.assertTrue(reply["managementAccepted"])
         self.assertEqual(reply["sessionId"], 42)
+        with self.issuer.store.connect() as db:
+            receipt = dict(db.execute("SELECT * FROM management_acceptances").fetchone())
+        self.assertEqual(receipt["leaf"], challenge["leafSha256"])
+        self.assertEqual(receipt["kind"], "bootstrap")
+        self.assertNotIn(challenge["nonce"], str(receipt))
         with self.assertRaises(ValueError):
             verifier.verify(peer, challenge["nonce"])
+
+    def test_renewal_acceptance_persists_authority_and_origin(self):
+        peer, verifier, challenge, state = self.prepare()
+        renewed = self.issuer.renew(peer, self.csr, "a" * 32)
+        renewed_der = x509.load_pem_x509_certificate(renewed).public_bytes(serialization.Encoding.DER)
+        publish(self.issuer, self.path / "gateway")
+        fresh = verifier.challenge(renewed_der)
+        state["connectionInfo"].update(privateLeafSha256=fresh["leafSha256"],
+            privateActivationNonce=fresh["nonce"], privatePolicyVersion=fresh["minimumPolicyVersion"], sessionId=43)
+        verifier.verify(renewed_der, fresh["nonce"])
+        with self.issuer.store.connect() as db:
+            receipt = dict(db.execute("SELECT * FROM management_acceptances").fetchone())
+        self.assertEqual(receipt["kind"], "renewal")
+        self.assertEqual(receipt["issuer"], self.issuer.authority)
+        self.assertEqual(receipt["session"], 43)
+        restarted = self.load()
+        with restarted.store.connect() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM management_acceptances").fetchone()[0], 1)
 
     def test_stale_tls_only_wrong_leaf_nonce_serial_and_unverified_refused(self):
         peer, verifier, challenge, state = self.prepare()

@@ -42,8 +42,9 @@ def public(key):
 
 
 class Issuer:
-    def __init__(self, root_path, issuer_path, key_path, state_path, clock=None):
+    def __init__(self, root_path, issuer_path, key_path, state_path, clock=None, authorization_guard=None):
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.authorization_guard = authorization_guard
         self.root = x509.load_pem_x509_certificate(private_read(root_path))
         self.ca = x509.load_pem_x509_certificate(private_read(issuer_path))
         self.key = serialization.load_pem_private_key(private_read(key_path), password=None)
@@ -62,6 +63,16 @@ class Issuer:
                     request TEXT PRIMARY KEY, response BLOB NOT NULL);
                 CREATE TABLE IF NOT EXISTS authorities(
                     fingerprint TEXT PRIMARY KEY, certificate BLOB NOT NULL, root BLOB NOT NULL);
+                CREATE TABLE IF NOT EXISTS issuance_origins(
+                    leaf TEXT PRIMARY KEY, kind TEXT NOT NULL, predecessor TEXT);
+                CREATE TABLE IF NOT EXISTS migration_grants(
+                    digest BLOB PRIMARY KEY, binding TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS migration_leaves(
+                    leaf TEXT PRIMARY KEY, binding TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS management_acceptances(
+                    challenge TEXT PRIMARY KEY, device TEXT NOT NULL, leaf TEXT NOT NULL,
+                    issuer TEXT NOT NULL, root TEXT NOT NULL, kind TEXT NOT NULL,
+                    accepted INTEGER NOT NULL, session INTEGER NOT NULL, policy INTEGER NOT NULL);
             """)
             db.execute("INSERT OR IGNORE INTO authorities VALUES (?,?,?)",
                        (self.authority, self.ca.public_bytes(serialization.Encoding.PEM), self.root.public_bytes(serialization.Encoding.PEM)))
@@ -99,6 +110,41 @@ class Issuer:
     def approve(self, device):
         self.store.approve(device)
 
+    def import_legacy(self, device, certificate_pem, trusted_root_pem):
+        """Operator-reviewed public leaf under preconfigured retained trust.
+
+        Caller supplies the retained root from protected deployment policy,
+        never an AP/browser claim. No legacy signing key is loaded or needed.
+        """
+        self.store.check_serial(device)
+        root = x509.load_pem_x509_certificate(trusted_root_pem)
+        root.verify_directly_issued_by(root)
+        if not root.extensions.get_extension_for_class(x509.BasicConstraints).value.ca or not root.extensions.get_extension_for_class(x509.KeyUsage).value.key_cert_sign:
+            raise ValueError("Invalid retained CA")
+        peer = x509.load_pem_x509_certificate(certificate_pem)
+        peer.verify_directly_issued_by(root)
+        if peer.subject != x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, device)]):
+            raise ValueError("Retained certificate identity mismatch")
+        if peer.extensions.get_extension_for_class(x509.BasicConstraints).value.ca or ExtendedKeyUsageOID.CLIENT_AUTH not in peer.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value:
+            raise ValueError("Retained certificate client purpose required")
+        if not all(cert.not_valid_before_utc <= self.clock() < cert.not_valid_after_utc for cert in (root, peer)):
+            raise ValueError("Expired retained identity requires recovery")
+        authority, leaf = fingerprint(root), fingerprint(peer)
+        with self.store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            enabled = db.execute("SELECT enabled FROM inventory WHERE serial=?", (device,)).fetchone()
+            if not enabled or enabled[0] != 1:
+                raise ValueError("Explicit active inventory approval required")
+            db.execute("INSERT OR IGNORE INTO authorities VALUES (?,?,?)", (authority, trusted_root_pem, trusted_root_pem))
+            # Preserve prior revocation; import must never silently un-revoke.
+            db.execute("INSERT OR IGNORE INTO issued VALUES (?,?,?,?,?,0)",
+                (leaf, device, authority, peer.public_bytes(serialization.Encoding.PEM), int(peer.not_valid_after_utc.timestamp())))
+            db.execute("INSERT OR IGNORE INTO issuance_origins VALUES (?, 'legacy', NULL)", (leaf,))
+            self._check_peer(db, peer)
+            db.execute("INSERT INTO audit(stamp,event,serial) VALUES (?,?,?)",
+                (int(self.clock().timestamp()), "retained-identity-imported:" + leaf, device))
+        return leaf
+
     def disable(self, device):
         self.store.check_serial(device)
         with self.store.connect() as db:
@@ -114,7 +160,7 @@ class Issuer:
         digest = hashlib.sha256(csr.public_bytes(serialization.Encoding.DER)).digest()
         return self.store.authorize(device, digest, self.authority)
 
-    def _issue(self, db, device, csr):
+    def _issue(self, db, device, csr, kind="bootstrap", predecessor=None):
         self._check_chain()
         stamp = self.clock()
         expiry = min(stamp + timedelta(days=365), self.ca.not_valid_after_utc, self.root.not_valid_after_utc)
@@ -132,6 +178,7 @@ class Issuer:
         result = cert.public_bytes(serialization.Encoding.PEM)
         db.execute("INSERT INTO issued VALUES (?,?,?,?,?,0)",
                    (fingerprint(cert), device, self.authority, result, int(expiry.timestamp())))
+        db.execute("INSERT INTO issuance_origins VALUES (?,?,?)", (fingerprint(cert), kind, predecessor))
         db.execute("INSERT INTO audit(stamp,event,serial) VALUES (?,?,?)",
                    (int(stamp.timestamp()), "certificate-issued", device))
         return result
@@ -148,11 +195,19 @@ class Issuer:
             approved = db.execute("SELECT enabled FROM inventory WHERE serial=?", (device,)).fetchone()
             if not grant or not approved or approved[0] != 1 or grant["serial"] != device or grant["authority"] != self.authority or grant["expires"] <= self.clock().timestamp() or grant["csr"] != digest:
                 raise ValueError("enrollment authorization rejected")
+            binding = db.execute("SELECT binding FROM migration_grants WHERE digest=?", (grant["digest"],)).fetchone()
+            if self.authorization_guard is not None:
+                if not binding:
+                    raise ValueError("Reviewed migration binding required")
+                self.authorization_guard.migration(device, binding[0], db)
             if grant["response"] is not None:
                 peer = x509.load_pem_x509_certificate(grant["response"])
                 self._check_peer(db, peer)
                 return grant["response"]
             response = self._issue(db, device, csr)
+            if binding:
+                issued = x509.load_pem_x509_certificate(response)
+                db.execute("INSERT INTO migration_leaves VALUES (?,?)", (fingerprint(issued), binding[0]))
             db.execute("UPDATE grants SET response=? WHERE digest=?", (response, grant["digest"]))
             return response
 
@@ -163,6 +218,8 @@ class Issuer:
         inventory = db.execute("SELECT enabled FROM inventory WHERE serial=?", (row["device"],)).fetchone()
         if not inventory or inventory[0] != 1:
             raise ValueError("disabled inventory")
+        if self.authorization_guard is not None:
+            self.authorization_guard.identity(row["device"], db)
         issuer_row = db.execute("SELECT certificate,root FROM authorities WHERE fingerprint=?", (row["issuer"],)).fetchone()
         issuer = x509.load_pem_x509_certificate(issuer_row[0])
         root = x509.load_pem_x509_certificate(issuer_row[1])
@@ -189,7 +246,7 @@ class Issuer:
             if cached:
                 self._check_peer(db, x509.load_pem_x509_certificate(cached[0]))
                 return cached[0]
-            response = self._issue(db, device, csr)
+            response = self._issue(db, device, csr, "renewal", fingerprint(peer))
             db.execute("INSERT INTO renewal_replies VALUES (?,?)", (request, response))
             return response
 

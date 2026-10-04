@@ -25,6 +25,8 @@ class Activation:
         with self.issuer.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             device = self.issuer._check_peer(db, peer)
+            if self.issuer.authorization_guard is not None:
+                self.issuer.authorization_guard.activation(device, fingerprint(peer), db)
             if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='gateway_policy_version'").fetchone():
                 raise ValueError("gateway policy publication required")
             version = db.execute("SELECT version FROM gateway_policy_version WHERE id=1").fetchone()
@@ -59,6 +61,8 @@ class Activation:
         with self.issuer.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             self.issuer._check_peer(db, peer)
+            if self.issuer.authorization_guard is not None:
+                self.issuer.authorization_guard.activation(device, fingerprint(peer), db)
             challenge = db.execute("SELECT * FROM activation_challenges WHERE nonce=?",
                 (hashlib.sha256(nonce.encode()).hexdigest(),)).fetchone()
             if not challenge or challenge["consumed"] or challenge["expires"] <= stamp or challenge["device"] != device or challenge["leaf"] != fingerprint(peer):
@@ -71,6 +75,13 @@ class Activation:
             if info.get("serialNumber") != device or connection.get("connected") is not True or connection.get("verifiedCertificate") != "VERIFIED" or connection.get("privateLeafSha256") != fingerprint(peer) or connection.get("privateActivationNonce") != nonce or session <= 0 or version < challenge["policy"] or not challenge["created"] <= started <= accepted <= stamp or accepted >= challenge["expires"]:
                 raise ValueError("fresh candidate management acceptance required")
             db.execute("UPDATE activation_challenges SET consumed=1 WHERE nonce=?", (challenge["nonce"],))
+            issued = db.execute("SELECT issuer FROM issued WHERE fingerprint=?", (fingerprint(peer),)).fetchone()
+            authority = db.execute("SELECT root FROM authorities WHERE fingerprint=?", (issued[0],)).fetchone()
+            root = x509.load_pem_x509_certificate(authority[0])
+            origin = db.execute("SELECT kind FROM issuance_origins WHERE leaf=?", (fingerprint(peer),)).fetchone()
+            db.execute("INSERT INTO management_acceptances VALUES (?,?,?,?,?,?,?,?,?)",
+                (challenge["nonce"], device, fingerprint(peer), issued[0], fingerprint(root),
+                 origin[0] if origin else "legacy-unclassified", accepted, session, version))
             db.execute("INSERT INTO audit(stamp,event,serial) VALUES (?,?,?)",
                        (stamp, "candidate-management-accepted:" + fingerprint(peer), device))
         return {"serial": device, "leafSha256": fingerprint(peer), "nonce": nonce,

@@ -30,15 +30,18 @@ are insufficient. The current activation tests use a synthetic gateway reader;
 protected deployment credential. Production credential provisioning, routing
 and AP activation remain pending.
 
-Migration grants also require an exact qualification callback before any
-approval, grant or audit mutation. Its default denies migration. OEM and stock
+The protected qualification registry records reviewed manufacturing evidence and
+independent OEM/stock release and runtime records. `authorization_guard.py` binds
+grants to their exact versions, explicit lifecycle approval and resolved current
+inventory ownership in the same transaction. Redemption, retries and activation
+revalidate this binding before writes. Missing or changed evidence denies migration. OEM and stock
 OpenWrt qualification are separate operations; normal authenticated renewal is
 independent of migration qualification. Authoritative manufacturing evidence
-requires a private portal-managed registry joined to existing provisioning
+uses the private portal-managed registry joined to existing provisioning
 inventory, never guessed from deviceType, locale or radio country.
 
-Run `python3 -B -m unittest -v test_issuer test_admin test_service test_policy_publisher test_activation test_gateway_reader` with
-cryptography 50.0.1 or compatible. Twenty-two distinct tests pass locally including
+Run `python3 -B -m unittest -v test_issuer test_admin test_service test_policy_publisher test_activation test_gateway_reader test_offline_ca test_qualification_registry test_ownership test_lifecycle test_legacy_import test_authorization_guard` with
+cryptography 50.0.1 or compatible. Thirty-five distinct tests pass locally including
 real loopback TLS bootstrap, client renewal and dual-root migration. The rollover
 fixture uses same-name authorities with explicit SKI/AKI binding and verifies
 old-only trust rejection and old-client/new-issuer reissuance. Loopback listeners require host
@@ -56,11 +59,14 @@ Outstanding integration gates:
 - AP key/CSR generation during authenticated installation, durable generation
   staging/rollback, hostname-verified DHCP224-first/private-default discovery.
 - Provisioning portal lifecycle screens and existing inventory/config integration.
-- Offline production twenty-year root named exactly **Shine Systems CA**, separate renewable device issuer,
-  backups and overlap with existing test CA; retire old trust only after every AP
-  has migrated with current certificate and fresh gateway proof recorded.
+- Root retirement requires complete fleet reconciliation and fresh management
+  acceptance, with explicit individual retirement for removed devices. The real
+  twenty-year **Shine Systems CA** and separate five-year device issuer were
+  created; encrypted root backups were handed off and temporary online root
+  exports removed. Production AP trust and identity migration remain pending.
 - Scoped recoverable E410 issuance, reboot retention, renewal, revocation/recovery.
 
 The test core deliberately has no public listener and no deploy activation.
-Revocation currently blocks issuer renewal only; gateway enforcement is pending.
+The actual gateway admission, revocation and dual-root session tests pass in an
+isolated container; production gateway enforcement and AP activation are pending.
 No production certificate replacement or end-to-end acceptance is claimed.

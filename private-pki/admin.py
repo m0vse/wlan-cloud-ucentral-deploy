@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 from cryptography import x509
 from cryptography.x509.oid import NameOID
 from issuer import fingerprint
+from ownership import snapshot
 
 
 class Denied(Exception):
@@ -55,16 +56,18 @@ class Controller:
         return actor
 
     def inventory(self, device, authorization):
-        inventory = self.fetch(16005, f"inventory/{device}?config=true&explain=true", authorization)
+        # config=true returns configuration only, not the inventory identity.
+        inventory = self.fetch(16005, f"inventory/{device}", authorization)
         if inventory.get("serialNumber") != device:
             raise Denied(403, "Provisioning inventory identity required")
         return inventory
 
 
 class Administration:
-    def __init__(self, issuer, controller, qualification=None):
+    def __init__(self, issuer, controller, qualification=None, registry=None):
         self.issuer, self.controller = issuer, controller
         self.qualification = qualification or (lambda device, inventory: False)
+        self.registry = registry
         with issuer.store.connect() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS operator_audit(
                 id INTEGER PRIMARY KEY, stamp INTEGER NOT NULL,
@@ -79,10 +82,62 @@ class Administration:
         actor = self.controller.root(authorization)
         if not isinstance(request, dict):
             raise Denied(400, "Invalid request")
+        if operation == "approve-identity" and set(request) == {"serial", "approved", "enabled", "retired"}:
+            guard = self.issuer.authorization_guard
+            if guard is None:
+                raise Denied(503, "Authoritative lifecycle adapter unavailable")
+            device = request["serial"]
+            self.issuer.store.check_serial(device)
+            inventory = self.controller.inventory(device, authorization)
+            ownership = snapshot(self.controller, inventory, authorization)
+            version = guard.lifecycle.approve(actor, device, ownership,
+                request["approved"], request["enabled"], request["retired"])
+            self._audit(actor, "identity-lifecycle-reviewed", device)
+            return {"serial": device, "version": version}
+        if operation == "authorize" and set(request) == {"serial", "csr", "operation"}:
+            guard = self.issuer.authorization_guard
+            if guard is None:
+                raise Denied(503, "Authoritative migration adapter unavailable")
+            device, csr = request["serial"], request["csr"]
+            self.issuer.store.check_serial(device)
+            if not isinstance(csr, str) or len(csr) > 16384:
+                raise Denied(400, "Invalid CSR")
+            token = guard.authorize(actor, device, csr.encode("ascii"), request["operation"])
+            return {"authorization": token, "expiresIn": 600, "serial": device}
+        if operation in ("evidence", "approve-hardware", "approve-qualification", "approve-runtime"):
+            if self.registry is None:
+                raise Denied(503, "Private evidence registry unavailable")
+            if operation == "evidence" and set(request) == {"serial"}:
+                self.controller.inventory(request["serial"], authorization)
+                return self.registry.view(request["serial"])
+            if operation == "approve-hardware" and set(request) == {"record"} and isinstance(request["record"], dict):
+                record = request["record"]
+                device = record.get("serialNumber")
+                self.issuer.store.check_serial(device)
+                inventory = self.controller.inventory(device, authorization)
+                version = self.registry.approve_hardware(actor, inventory, record)
+                self._audit(actor, "hardware-evidence-approved", device)
+                return {"version": version, "serial": device}
+            if operation == "approve-qualification" and set(request) == {"record"}:
+                identity, version = self.registry.approve_qualification(actor, request["record"])
+                self._audit(actor, "migration-qualification-approved", identity)
+                return {"identity": identity, "version": version}
+            if operation == "approve-runtime" and set(request) == {"identity", "record"} and isinstance(request["record"], dict):
+                record = request["record"]
+                device = record.get("serial")
+                self.issuer.store.check_serial(device)
+                inventory = self.controller.inventory(device, authorization)
+                binding = self.registry.approve_runtime(actor, inventory, request["identity"], record)
+                self._audit(actor, "migration-runtime-approved", device)
+                return binding
+            raise Denied(400, "Invalid evidence review request")
         if operation == "status" and not request:
             with self.issuer.store.connect() as db:
                 certificates = [dict(row) for row in db.execute(
-                    "SELECT fingerprint,device,issuer,expires,revoked FROM issued ORDER BY device,expires DESC LIMIT 1000")]
+                    """SELECT fingerprint,device,issuer,expires,revoked,
+                        (SELECT max(accepted) FROM management_acceptances WHERE leaf=fingerprint) AS managementAcceptedAt,
+                        (SELECT kind FROM issuance_origins WHERE leaf=fingerprint) AS issuanceKind
+                        FROM issued ORDER BY device,expires DESC LIMIT 1000""")]
                 authority_rows = list(db.execute("SELECT fingerprint,root FROM authorities"))
                 issuers = [row[0] for row in authority_rows]
                 roots = {}
@@ -100,6 +155,8 @@ class Administration:
                 return {"events": [dict(row) for row in db.execute(
                     "SELECT stamp,actor,action,target FROM operator_audit ORDER BY id DESC LIMIT 500")]}
         if operation == "authorize" and set(request) == {"serial", "csr"}:
+            if self.issuer.authorization_guard is not None:
+                raise Denied(400, "Explicit migration operation required")
             device, csr = request["serial"], request["csr"]
             self.issuer.store.check_serial(device)
             if not isinstance(csr, str) or len(csr) > 16384:
