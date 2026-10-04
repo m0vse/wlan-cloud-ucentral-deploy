@@ -14,6 +14,7 @@ from admin import Administration, Controller, Denied
 from issuer import Issuer, fingerprint, private_read
 from qualification_registry import Registry
 from service import BoundedServer, handler
+from onboarding import Onboarding
 
 
 class PortalAdministration(Administration):
@@ -21,6 +22,7 @@ class PortalAdministration(Administration):
         super().__init__(issuer, controller, registry=Registry(issuer.store))
         self.retained = []
         self.observations = Path(observations) if observations else None
+        self.onboarding = Onboarding(issuer.store, controller)
         for path in retained_roots:
             root = x509.load_pem_x509_certificate(private_read(path))
             root.verify_directly_issued_by(root)
@@ -29,6 +31,13 @@ class PortalAdministration(Administration):
             self.retained.append(root)
 
     def call(self, authorization, operation, request):
+        if operation in ('onboard', 'cancel-onboarding'):
+            actor = self.controller.root(authorization)
+            if operation == 'onboard' and isinstance(request, dict) and set(request) == {'serial'}:
+                return self.onboarding.start(actor, request['serial'], authorization)
+            if operation == 'cancel-onboarding' and isinstance(request, dict) and set(request) == {'job'}:
+                return self.onboarding.cancel(actor, request['job'])
+            raise Denied(400, 'Invalid onboarding request')
         result = super().call(authorization, operation, request)
         if operation == "status":
             result["phase"] = "prepared"
@@ -45,6 +54,8 @@ class PortalAdministration(Administration):
                     "expires": int(root.not_valid_after_utc.timestamp()), "state": "retained"})
             result["setup"] = {"state": "controller-integration-pending",
                 "message": "Certificate service is connected. Controller service-account restrictions and AP activation are being integrated."}
+            result['onboarding'] = self.onboarding.list()
+            result['onboardingApproval'] = 'until-completed-or-cancelled'
             if self.observations:
                 for path in sorted(self.observations.glob('*.pem')):
                     device = path.stem

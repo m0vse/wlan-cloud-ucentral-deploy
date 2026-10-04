@@ -19,7 +19,7 @@ class Lifecycle:
                     ownership TEXT NOT NULL, actor TEXT NOT NULL, stamp INTEGER NOT NULL);
             ''')
 
-    def approve(self, actor, serial, ownership, approved, enabled, retired):
+    def approve(self, actor, serial, ownership, approved, enabled, retired, db=None):
         self.store.check_serial(serial)
         if not isinstance(actor, str) or not actor or len(actor) > 128:
             raise ValueError('Authenticated lifecycle operator required')
@@ -30,17 +30,19 @@ class Lifecycle:
         if not isinstance(ownership, dict) or ownership.get('serial') != serial or not ownership.get('inventoryId'):
             raise ValueError('Resolved authoritative inventory ownership required')
         encoded = json.dumps(ownership, sort_keys=True, separators=(',', ':'))
-        with self.store.connect() as db:
-            db.execute('BEGIN IMMEDIATE')
-            previous = db.execute('SELECT version FROM identity_lifecycle WHERE serial=?', (serial,)).fetchone()
-            version = previous[0] + 1 if previous else 1
-            row = (serial, version, int(approved), int(enabled), int(retired), encoded, actor, int(self.store.clock()))
-            db.execute('INSERT OR REPLACE INTO identity_lifecycle VALUES (?,?,?,?,?,?,?,?)', row)
-            db.execute('INSERT INTO lifecycle_history(serial,version,approved,enabled,retired,ownership,actor,stamp) VALUES (?,?,?,?,?,?,?,?)', row)
-            db.execute('INSERT OR REPLACE INTO inventory VALUES (?,?)', (serial, int(approved and enabled and not retired)))
-            if not approved or not enabled or retired:
-                db.execute('DELETE FROM grants WHERE serial=?', (serial,))
-            return version
+        if db is None:
+            with self.store.connect() as connection:
+                connection.execute('BEGIN IMMEDIATE')
+                return self.approve(actor, serial, ownership, approved, enabled, retired, connection)
+        previous = db.execute('SELECT version FROM identity_lifecycle WHERE serial=?', (serial,)).fetchone()
+        version = previous[0] + 1 if previous else 1
+        row = (serial, version, int(approved), int(enabled), int(retired), encoded, actor, int(self.store.clock()))
+        db.execute('INSERT OR REPLACE INTO identity_lifecycle VALUES (?,?,?,?,?,?,?,?)', row)
+        db.execute('INSERT INTO lifecycle_history(serial,version,approved,enabled,retired,ownership,actor,stamp) VALUES (?,?,?,?,?,?,?,?)', row)
+        db.execute('INSERT OR REPLACE INTO inventory VALUES (?,?)', (serial, int(approved and enabled and not retired)))
+        if not approved or not enabled or retired:
+            db.execute('DELETE FROM grants WHERE serial=?', (serial,))
+        return version
 
     def check(self, serial, ownership, db=None):
         self.store.check_serial(serial)

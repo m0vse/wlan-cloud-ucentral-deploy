@@ -31,7 +31,9 @@ class PortalRuntimeTests(unittest.TestCase):
         controller.root.side_effect = Denied(403, 'Root required')
         admin = PortalAdministration(self.issuer, controller, [self.path / 'root'])
         for operation, request in [('status', {}), ('audit', {}),
-                                   ('approve-hardware', {'record': {}})]:
+                                   ('approve-hardware', {'record': {}}),
+                                   ('onboard', {'serial': self.device}),
+                                   ('cancel-onboarding', {'job': 'a' * 32})]:
             with self.assertRaises(Denied):
                 admin.call('Bearer synthetic', operation, request)
         controller.inventory.assert_not_called()

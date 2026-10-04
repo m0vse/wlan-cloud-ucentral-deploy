@@ -4,6 +4,7 @@ Separate admin and AP listeners: AP requests never reach portal administration.
 The peer DER comes exclusively from the TLS socket, never headers/JSON.
 """
 import base64
+import hashlib
 from collections import OrderedDict, deque
 import http.server
 import json
@@ -20,8 +21,9 @@ from admin import Denied
 
 
 class RateLimit:
-    def __init__(self, clock=time.monotonic):
+    def __init__(self, clock=time.monotonic, global_limit=120, identity_limit=12):
         self.clock, self.lock = clock, threading.Lock()
+        self.global_limit, self.identity_limit = global_limit, identity_limit
         self.global_requests, self.identities = deque(), OrderedDict()
 
     def allow(self, identity):
@@ -33,10 +35,10 @@ class RateLimit:
             for key in list(self.identities):
                 if not self.identities[key]:
                     del self.identities[key]
-            if len(self.global_requests) >= 120 or (identity not in self.identities and len(self.identities) >= 256):
+            if len(self.global_requests) >= self.global_limit or (identity not in self.identities and len(self.identities) >= 256):
                 return False
             queue = self.identities.setdefault(identity, deque())
-            if len(queue) >= 12:
+            if len(queue) >= self.identity_limit:
                 return False
             queue.append(stamp)
             self.global_requests.append(stamp)
@@ -67,7 +69,7 @@ def pkcs7_reply(issuer, certificate=None):
 def handler(issuer, administration=None, mode="ap", activation=None):
     if mode not in ("ap", "admin") or (mode == "admin" and administration is None):
         raise ValueError("invalid listener mode")
-    rate = RateLimit()
+    rate = RateLimit(global_limit=600, identity_limit=60) if mode == 'admin' else RateLimit()
 
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.0"
@@ -105,8 +107,13 @@ def handler(issuer, administration=None, mode="ap", activation=None):
             return self.connection.getpeercert(binary_form=True)
 
         def dispatch(self):
-            # Bound by observed connection address, not caller-supplied identity.
-            if not rate.allow(self.client_address[0]):
+            # AP limits use the observed peer address. Portal requests share one
+            # reverse proxy: count their nonlogged token digest independently,
+            # while bounding all attempts globally and validating every token.
+            identity = self.client_address[0]
+            if mode == 'admin':
+                identity = hashlib.sha256(self.headers.get('Authorization', '').encode()).hexdigest()
+            if not rate.allow(identity):
                 raise Denied(429, "Request limit exceeded")
             if mode == "admin":
                 prefix = "/api/v1/pki/"
@@ -115,7 +122,7 @@ def handler(issuer, administration=None, mode="ap", activation=None):
                 operation = self.path[len(prefix):]
                 if self.command == "GET" and operation in ("status", "audit"):
                     request = {}
-                elif self.command == "POST" and operation in ("authorize", "evidence", "approve-hardware", "approve-qualification", "approve-runtime", "approve-identity", "retirement-review"):
+                elif self.command == "POST" and operation in ("authorize", "evidence", "approve-hardware", "approve-qualification", "approve-runtime", "approve-identity", "retirement-review", "onboard", "cancel-onboarding"):
                     if self.headers.get("Content-Type") != "application/json":
                         raise Denied(415, "JSON required")
                     request = json_object(self.body())

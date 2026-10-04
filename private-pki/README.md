@@ -16,8 +16,12 @@ approve inventory and authorize the exact CSR. Recovery uses a new operator gran
 binding and actor-attributed audit records. `service.py` exposes separate bounded
 loopback administration and real-TLS enrollment test adapters. Peer certificates
 come from the TLS socket. No trust is placed in forwarded certificate headers.
-There is no production startup command or public binding. Revocation controls
-remain unavailable in administration until gateway enforcement exists.
+`portal_runtime.py` provides a private-network administration listener behind
+the portal TLS proxy. Every request validates the existing Root session with
+OWSEC; no human token is stored. It reports prepared and retained authorities
+separately and checks observed public AP certificates against retained trust and
+current provisioning inventory. AP enrollment and revocation remain unavailable
+until gateway and AP activation integration is complete.
 
 `policy_publisher.py` atomically publishes short-lived, versioned public leaf
 pins from the private ledger. Revoked, disabled and expired identities are
@@ -49,7 +53,7 @@ ownership and have confirmed gateway disconnection. This preview does not remove
 trust or replace the final deployment gate.
 
 Run `python3 -B -m unittest -v test_issuer test_admin test_service test_policy_publisher test_activation test_gateway_reader test_offline_ca test_qualification_registry test_ownership test_lifecycle test_legacy_import test_authorization_guard test_fleet_gate` with
-cryptography 50.0.1 or compatible. Thirty-nine distinct tests pass locally including
+cryptography 50.0.1 or compatible. Forty-four distinct tests pass in the Python 3.13 runtime including
 real loopback TLS bootstrap, client renewal and dual-root migration. The rollover
 fixture uses same-name authorities with explicit SKI/AKI binding and verifies
 old-only trust rejection and old-client/new-issuer reissuance. Loopback listeners require host
@@ -78,3 +82,10 @@ The test core deliberately has no public listener and no deploy activation.
 The actual gateway admission, revocation and dual-root session tests pass in an
 isolated container; production gateway enforcement and AP activation are pending.
 No production certificate replacement or end-to-end acceptance is claimed.
+
+The normal portal flow is select AP → Onboard. `onboarding.py` stores an atomic,
+audited lifecycle approval and durable job. Approval has no operator time window,
+survives restarts, and ends on completion or cancellation. Ownership changes
+cannot inherit it. The current deployed job state truthfully waits for controller
+setup; the unattended worker and AP installation/rollback are not yet deployed.
+No CSR, grant token or qualification form is part of the normal user flow.
