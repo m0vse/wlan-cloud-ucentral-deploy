@@ -12,7 +12,6 @@ from issuer import Issuer
 from lifecycle import Lifecycle
 from ownership import snapshot
 from qualification_registry import Registry
-from migration_qualification import OPERATIONS
 
 
 def encoded(value):
@@ -127,22 +126,14 @@ class Campaigns:
             if not inventory or inventory[0]!=1: raise ValueError('AP enrollment is disabled')
             if member['csr_digest'] is not None and member['csr_digest']!=csr_digest:
                 raise ValueError('AP is already bound to another enrollment request')
-            if campaign['operation']=='migration':
-                qualified=[]
-                for operation in sorted(OPERATIONS):
-                    try:
-                        record=self.registry.check(serial,{'serialNumber':serial},operation,db)
-                        qualified.append({'operation':operation,**record})
-                    except ValueError: pass
-                if not qualified: raise ValueError('Migration is not qualified for this AP')
-                binding=encoded(qualified)
-                if member['qualification'] is not None and member['qualification']!=binding:
-                    raise ValueError('Migration qualification changed; review required')
-            else: binding=None
+            # An active approved batch authorizes certificate enrollment.
+            # Manufacturing/source qualification is an installer safety policy,
+            # not a prerequisite for native EST certificate issuance.
+            # Preserve historical qualification metadata on cached responses.
             if member['response'] is not None:
                 self.issuer._check_peer(db,x509.load_pem_x509_certificate(member['response']))
                 return member['response']
             response=self.issuer._issue(db,serial,csr)
             db.execute('UPDATE campaign_members SET csr_digest=?,response=?,qualification=? WHERE campaign=? AND serial=?',
-                       (csr_digest,response,binding,campaign['id'],serial))
+                       (csr_digest,response,None,campaign['id'],serial))
             return response

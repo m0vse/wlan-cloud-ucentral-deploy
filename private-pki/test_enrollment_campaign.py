@@ -65,7 +65,7 @@ class CampaignTests(unittest.TestCase):
         renewed=self.issuer.renew(x509.load_pem_x509_certificate(leaf).public_bytes(serialization.Encoding.DER),self.build_csr(self.device,self.key),'a'*32)
         x509.load_pem_x509_certificate(renewed).verify_directly_issued_by(self.authority.device)
 
-    def test_concurrent_first_key_binding_and_missing_migration_qualification(self):
+    def test_concurrent_first_key_binding_and_migration_key_without_manufacturing(self):
         campaigns,controller=self.campaigns()
         batch=campaigns.create('root',[self.device],'Bearer synthetic','new-openwifi-enrollment')
         requests=[self.build_csr(self.device,ec.generate_private_key(ec.SECP256R1())) for _ in range(2)]
@@ -75,9 +75,10 @@ class CampaignTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=2) as workers: results=list(workers.map(attempt,requests))
         self.assertEqual(sum(item is not None for item in results),1)
         migration=campaigns.create('root',['001122334456'],'Bearer synthetic','migration')
-        with self.assertRaises(ValueError): campaigns.bootstrap(migration['enrollmentKey'],'001122334456',self.build_csr('001122334456',self.key))
+        leaf=campaigns.bootstrap(migration['enrollmentKey'],'001122334456',self.build_csr('001122334456',self.key))
+        x509.load_pem_x509_certificate(leaf).verify_directly_issued_by(self.authority.device)
         with self.issuer.store.connect() as db:
-            self.assertEqual(db.execute('SELECT count(*) FROM issued WHERE device=?',('001122334456',)).fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT count(*) FROM issued WHERE device=?',('001122334456',)).fetchone()[0],1)
 
     def test_shared_batch_preserves_independent_source_qualifications(self):
         from test_qualification_registry import RegistryTests
@@ -99,6 +100,5 @@ class CampaignTests(unittest.TestCase):
         batch=campaigns.create('root',serials,'Bearer synthetic','migration')
         leaves=[campaigns.bootstrap(batch['enrollmentKey'],serial,self.build_csr(serial,self.key)) for serial in serials]
         campaigns.registry.approve_qualification('root',records[0])
-        with self.assertRaises(ValueError):
-            campaigns.bootstrap(batch['enrollmentKey'],serials[0],self.build_csr(serials[0],self.key))
+        self.assertEqual(leaves[0],campaigns.bootstrap(batch['enrollmentKey'],serials[0],self.build_csr(serials[0],self.key)))
         self.assertEqual(leaves[1],campaigns.bootstrap(batch['enrollmentKey'],serials[1],self.build_csr(serials[1],self.key)))
