@@ -53,7 +53,7 @@ class Campaigns:
         with self.issuer.store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             for serial, ownership in approved:
-                if db.execute('SELECT 1 FROM issued WHERE device=? LIMIT 1', (serial,)).fetchone():
+                if db.execute('SELECT 1 FROM issued WHERE device=? AND revoked=0 LIMIT 1', (serial,)).fetchone():
                     raise ValueError('An AP is already enrolled; use native renewal or CA migration')
                 if db.execute('''SELECT 1 FROM campaign_members m JOIN enrollment_campaigns c
                     ON m.campaign=c.id WHERE m.serial=? AND c.active=1''', (serial,)).fetchone():
