@@ -35,9 +35,13 @@ it does not claim that the gateway exposes a DER certificate fingerprint.
 
 Campaign membership binds approved inventory ownership and immutable signed CSR
 contents. Safe retries return the same leaf, including regenerated ECDSA
-signatures. Migration enrollment also checks the trusted qualification registry;
-OEM and stock OpenWrt remain independent source operations. A shared enrollment
-key is neither firmware authorization nor a Root API credential.
+signatures. An active approved batch key authorizes native enrollment for its
+members without manufacturing or source-qualification records. Ownership,
+enabled inventory, signed CSR identity and first-key binding remain enforced.
+Installer model, image, slot, storage and backup checks remain separate from
+certificate admission. Historical qualification metadata is retained without
+blocking safe certificate retries. A shared enrollment key is neither firmware
+authorization nor a Root API credential.
 
 ## Native AP interface
 
