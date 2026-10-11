@@ -22,10 +22,13 @@ class ApiError(Exception):
         self.status, self.message = status, message
 
 
-def fetch(service, path, authorization):
+def fetch(service, path, authorization, body=None):
+    payload = None if body is None else json.dumps(body, allow_nan=False).encode()
     request = urllib.request.Request(
         f"{ORIGIN}:{PORTS[service]}/api/v1/{path}",
-        headers={"Authorization": authorization, "Accept": "application/json"},
+        data=payload,
+        headers={"Authorization": authorization, "Accept": "application/json",
+                 **({"Content-Type": "application/json"} if body is not None else {})},
     )
     try:
         with urllib.request.urlopen(request, timeout=12) as response:
@@ -40,11 +43,39 @@ def fetch(service, path, authorization):
 
 
 def require_root(authorization):
+    user = authenticated_user(authorization)
+    if user.get("userRole") != "root":
+        raise ApiError(403, "Root access required")
+
+
+def authenticated_user(authorization):
     if not re.fullmatch(r"Bearer [A-Za-z0-9._~+/-]+=*", authorization or ""):
         raise ApiError(401, "Sign in required")
     user = fetch("sec", "oauth2?me=true", authorization)
-    if user.get("userRole") != "root" or user.get("suspended") or user.get("blackListed"):
-        raise ApiError(403, "Root access required")
+    if not isinstance(user, dict) or user.get("suspended") is not False or user.get("blackListed") is not False:
+        raise ApiError(403, "Access unavailable")
+    if not isinstance(user.get("id"), str) or not user["id"] or not isinstance(user.get("userRole"), str):
+        raise ApiError(403, "Access unavailable")
+    return user
+
+
+def client_devices(authorization, user):
+    """The provisioner derives ownership; browser filters never grant access."""
+    result = fetch("prov", "access/check", authorization,
+                   {"userId": user["id"], "capability": "clients.read", "listDevices": True})
+    if not isinstance(result, dict) or not isinstance(result.get("devices"), list):
+        raise ApiError(502, "Invalid access response")
+    devices, seen = [], set()
+    for device in result["devices"]:
+        if not isinstance(device, dict) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", str(device.get("serialNumber", ""))):
+            raise ApiError(502, "Invalid access response")
+        serial = device["serialNumber"]
+        if serial not in seen:
+            seen.add(serial)
+            devices.append(device)
+    if len(devices) > 10000:
+        raise ApiError(502, "Device limit exceeded")
+    return devices
 
 
 def number(value):
@@ -228,9 +259,10 @@ def device_rows(device, authorization, historic):
 
 
 def collect(authorization, params):
-    require_root(authorization)  # Must precede ALL inventory/statistics access.
+    user = authenticated_user(authorization)  # Before ALL inventory/statistics access.
+    restricted = user["userRole"] != "root"
     historic = params.get("historic", ["false"])[0] == "true"
-    devices = get_devices(authorization)
+    devices = client_devices(authorization, user) if restricted else get_devices(authorization)
     rows, aps, errors = [], [], []
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
         for result in pool.map(lambda device: device_rows(device, authorization, historic), devices):
@@ -240,6 +272,15 @@ def collect(authorization, params):
                 aps.append(ap)
             if error:
                 errors.append({"apSerial": (ap or {}).get("apSerial", ""), "message": error})
+    if restricted:
+        # A request may span telemetry calls: discard data revoked while it ran.
+        current = authenticated_user(authorization)
+        if current["id"] != user["id"]:
+            raise ApiError(403, "Access unavailable")
+        allowed = {device["serialNumber"] for device in client_devices(authorization, current)}
+        rows = [row for row in rows if row["apSerial"] in allowed]
+        aps = [ap for ap in aps if ap["apSerial"] in allowed]
+        errors = [error for error in errors if error["apSerial"] in allowed]
     for field, param in [("entityId", "entity"), ("venueId", "venue"), ("apSerial", "ap"), ("band", "band")]:
         value = params.get(param, [""])[0]
         if value:

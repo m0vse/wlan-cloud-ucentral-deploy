@@ -1,5 +1,62 @@
 import unittest
+from unittest.mock import patch
 import server
+
+
+class AccessTests(unittest.TestCase):
+    USER = {'id': 'scoped-user', 'userRole': 'csr', 'suspended': False, 'blackListed': False}
+
+    def test_restricted_scope_precedes_telemetry_and_never_lists_gateway(self):
+        calls = []
+        def fake(service, path, auth, body=None):
+            calls.append((service, path, body))
+            if path == 'oauth2?me=true':
+                return self.USER.copy()
+            if path == 'access/check':
+                self.assertEqual(body['userId'], self.USER['id'])
+                self.assertEqual(body['capability'], 'clients.read')
+                return {'devices': [{'serialNumber': 'ap-a'}]}
+            self.fail('Unexpected data fetch')
+        def telemetry(device, auth, historic):
+            self.assertEqual(calls[1][1], 'access/check')
+            self.assertEqual(device['serialNumber'], 'ap-a')
+            return [{'apSerial': 'ap-a', 'endTime': None}], {'apSerial': 'ap-a'}, ''
+        with patch.object(server, 'fetch', side_effect=fake), patch.object(server, 'device_rows', side_effect=telemetry):
+            result = server.collect('Bearer test', {})
+        self.assertEqual(len(result['rows']), 1)
+        self.assertEqual([c[1] for c in calls], ['oauth2?me=true', 'access/check', 'oauth2?me=true', 'access/check'])
+
+    def test_revocation_during_collection_removes_rows_metadata_and_errors(self):
+        with patch.object(server, 'authenticated_user', return_value=self.USER), \
+             patch.object(server, 'client_devices', side_effect=[[{'serialNumber': 'ap-a'}], []]), \
+             patch.object(server, 'device_rows', return_value=([{'apSerial': 'ap-a', 'endTime': None}], {'apSerial': 'ap-a'}, 'private failure')):
+            result = server.collect('Bearer test', {})
+        for field in ('rows', 'aps', 'errors'):
+            self.assertEqual(result[field], [])
+
+    def test_denial_precedes_all_inventory(self):
+        for mutation in ({'suspended': True}, {'blackListed': True}, {'suspended': 'false'}, {'id': ''}):
+            with patch.object(server, 'fetch', return_value=dict(self.USER, **mutation)) as fetch, \
+                 patch.object(server, 'device_rows') as telemetry:
+                with self.assertRaises(server.ApiError):
+                    server.collect('Bearer test', {})
+                self.assertEqual(fetch.call_count, 1)
+                telemetry.assert_not_called()
+
+    def test_malformed_snapshot_fails_closed(self):
+        for response in ({}, {'devices': None}, {'devices': [{'serialNumber': '../escape'}]}, {'devices': [None]}):
+            with patch.object(server, 'fetch', return_value=response):
+                with self.assertRaises(server.ApiError):
+                    server.client_devices('Bearer test', self.USER)
+
+    def test_root_path_preserves_existing_global_view(self):
+        root = dict(self.USER, userRole='root')
+        with patch.object(server, 'authenticated_user', return_value=root), \
+             patch.object(server, 'get_devices', return_value=[]) as devices, \
+             patch.object(server, 'client_devices') as scoped:
+            server.collect('Bearer test', {})
+        devices.assert_called_once_with('Bearer test')
+        scoped.assert_not_called()
 
 
 class OperatingBandTests(unittest.TestCase):
