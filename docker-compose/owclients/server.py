@@ -213,13 +213,13 @@ def get_devices(authorization):
     raise ApiError(502, "Device limit exceeded; narrow the deployment scope")
 
 
-def device_rows(device, authorization, historic):
+def device_rows(device, authorization, historic, restricted=False):
     serial = str(device.get("serialNumber", ""))
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", serial):
         return [], None, "Invalid AP serial"
     partial = []
     try:
-        inventory = fetch("prov", f"inventory/{serial}?withExtendedInfo=true", authorization)
+        inventory = fetch("prov", f"inventory/{serial}" + ("" if restricted else "?withExtendedInfo=true"), authorization)
     except ApiError:
         inventory = {}
         partial.append("Inventory unavailable")
@@ -265,7 +265,7 @@ def collect(authorization, params):
     devices = client_devices(authorization, user) if restricted else get_devices(authorization)
     rows, aps, errors = [], [], []
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
-        for result in pool.map(lambda device: device_rows(device, authorization, historic), devices):
+        for result in pool.map(lambda device: device_rows(device, authorization, historic, restricted=restricted), devices):
             values, ap, error = result
             rows.extend(values)
             if ap:

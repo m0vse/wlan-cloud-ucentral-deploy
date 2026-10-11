@@ -17,7 +17,8 @@ class AccessTests(unittest.TestCase):
                 self.assertEqual(body['capability'], 'clients.read')
                 return {'devices': [{'serialNumber': 'ap-a'}]}
             self.fail('Unexpected data fetch')
-        def telemetry(device, auth, historic):
+        def telemetry(device, auth, historic, restricted=False):
+            self.assertTrue(restricted)
             self.assertEqual(calls[1][1], 'access/check')
             self.assertEqual(device['serialNumber'], 'ap-a')
             return [{'apSerial': 'ap-a', 'endTime': None}], {'apSerial': 'ap-a'}, ''

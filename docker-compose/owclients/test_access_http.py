@@ -35,7 +35,7 @@ class Peer(BaseHTTPRequestHandler):
                                     'suspended': False, 'blackListed': False})
         if path.startswith('devices?'):
             return self.reply(200, {'devicesWithStatus': [{'serialNumber': 'ap-a', 'connected': True}]})
-        if path == 'inventory/ap-a?withExtendedInfo=true':
+        if path in ('inventory/ap-a', 'inventory/ap-a?withExtendedInfo=true'):
             return self.reply(200, {'name': 'Synthetic AP'})
         if path.startswith('device/ap-a/statistics?'):
             self.reply(200, {'data': [{'recorded': 100, 'data': {'interfaces': [
@@ -83,6 +83,8 @@ class ClientHttpTests(unittest.TestCase):
         result = self.request()
         self.assertEqual(len(result['rows']), 1)
         self.assertFalse(any(path.startswith('/api/v1/devices?') for path, _ in Peer.calls))
+        self.assertIn(('/api/v1/inventory/ap-a', None), Peer.calls)
+        self.assertNotIn(('/api/v1/inventory/ap-a?withExtendedInfo=true', None), Peer.calls)
         self.assertEqual(sum(path == '/api/v1/access/check' for path, _ in Peer.calls), 2)
 
     def test_root_http_response_keeps_original_path(self):
