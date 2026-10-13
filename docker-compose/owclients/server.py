@@ -134,18 +134,54 @@ def client_addresses(client, observed, version):
     return preferred_direct or usable_addresses(direct + fallback, version)
 
 
+def valid_mac(value):
+    if not isinstance(value, str) or not re.fullmatch(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", value):
+        return None
+    value = value.lower()
+    return value if value != "00:00:00:00:00:00" and not int(value[:2], 16) & 1 else None
+
+
+def negotiated_mlo(client):
+    """Accept negotiated peer metadata, not the AP's MLO capabilities."""
+    raw = client.get("mlo")
+    if not isinstance(raw, dict) or raw.get("counters_scope") != "mld":
+        return None
+    mld = valid_mac(raw.get("mld_address"))
+    if not mld or mld != valid_mac(client.get("station")):
+        return None
+    links = raw.get("links")
+    if not isinstance(links, list) or not 2 <= len(links) <= 16:
+        return None
+    result, ids, addresses = [], set(), set()
+    for link in links:
+        if not isinstance(link, dict):
+            return None
+        link_id = link.get("link_id")
+        address, bssid = valid_mac(link.get("address")), valid_mac(link.get("bssid"))
+        frequency = number(link.get("frequency"))
+        band = operating_band({"frequency": frequency})
+        if (isinstance(link_id, bool) or not isinstance(link_id, int) or not 0 <= link_id <= 15
+                or link_id in ids or not address or address in addresses or not bssid
+                or band not in ("2G", "5G", "6G")):
+            return None
+        ids.add(link_id)
+        addresses.add(address)
+        result.append({"linkId": link_id, "mac": address, "bssid": bssid, "frequency": frequency,
+                       "band": band, "channel": number(link.get("channel"))})
+    return {"mldAddress": mld, "links": sorted(result, key=lambda link: link["linkId"]), "countersScope": "mld"}
+
+
 def associations(state):
     radios = state.get("radios") or []
     result = {}
     for interface in state.get("interfaces") or []:
         addresses = {str(c.get("mac", "")).lower(): c for c in interface.get("clients") or []}
         for ssid in interface.get("ssids") or []:
-            radio = next((r for r in radios if ssid.get("phy") and r.get("phy") == ssid["phy"]), {})
+            reference = str((ssid.get("radio") or {}).get("$ref", ""))
+            match = re.fullmatch(r"#?/radios/(\d+)", reference)
+            radio = radios[int(match[1])] if match and int(match[1]) < len(radios) else {}
             if not radio:
-                reference = str((ssid.get("radio") or {}).get("$ref", ""))
-                match = re.search(r"/(\d+)$", reference)
-                if match and int(match[1]) < len(radios):
-                    radio = radios[int(match[1])]
+                radio = next((r for r in radios if ssid.get("phy") and r.get("phy") == ssid["phy"]), {})
             band = operating_band(radio)
             for client in ssid.get("associations") or []:
                 if client.get("authorized") is False:
@@ -157,7 +193,9 @@ def associations(state):
                 ipv4 = client_addresses(client, addresses.get(mac, {}), 4)
                 ipv6 = client_addresses(client, addresses.get(mac, {}), 6)
                 ip = ", ".join(ipv4 + ipv6)
-                result[(mac, bssid)] = {
+                mlo = negotiated_mlo(client)
+                key = (mlo["mldAddress"], "mlo:" + str(ssid.get("ssid", ""))) if mlo else (mac, bssid)
+                row = {
                     "mac": mac, "bssid": bssid, "ssid": ssid.get("ssid", ""),
                     "band": band, "channel": radio.get("channel"), "ip": ip,
                     "ipv4Addresses": ipv4, "ipv6Addresses": ipv6,
@@ -166,6 +204,14 @@ def associations(state):
                     "txRate": number((client.get("tx_rate") or {}).get("bitrate")),
                     "connectedSeconds": number(client.get("connected")),
                 }
+                if mlo:
+                    row.update(mlo=mlo, band="MLO", channel=None)
+                    if row["signal"] in (None, 0):
+                        average = number(client.get("rssi_avg"))
+                        row["signal"] = average if average is not None and -127 <= average < 0 else None
+                        if row["signal"] is not None:
+                            row["signalSource"] = "average"
+                result[key] = row
     return result
 
 

@@ -14,6 +14,7 @@ class Peer(BaseHTTPRequestHandler):
     calls = []
     revoked = False
     role = 'csr'
+    mlo = False
 
     def log_message(self, *_):
         pass
@@ -38,8 +39,14 @@ class Peer(BaseHTTPRequestHandler):
         if path in ('inventory/ap-a', 'inventory/ap-a?withExtendedInfo=true'):
             return self.reply(200, {'name': 'Synthetic AP'})
         if path.startswith('device/ap-a/statistics?'):
+            if self.mlo:
+                from test_mlo import ClientsTests
+                client = ClientsTests().mlo_client()
+                client.update(rssi=0, rssi_avg=-49)
+            else:
+                client = {'station': '00:11:22:33:44:55', 'connected': 1}
             self.reply(200, {'data': [{'recorded': 100, 'data': {'interfaces': [
-                {'ssids': [{'associations': [{'station': '00:11:22:33:44:55', 'connected': 1}]}]}]}}]})
+                {'ssids': [{'associations': [client]}]}]}}]})
             if getattr(self.server, 'revoke_after_statistics', False):
                 Peer.revoked = True
             return
@@ -55,7 +62,7 @@ class Peer(BaseHTTPRequestHandler):
 
 class ClientHttpTests(unittest.TestCase):
     def setUp(self):
-        Peer.calls, Peer.revoked, Peer.role = [], False, 'csr'
+        Peer.calls, Peer.revoked, Peer.role, Peer.mlo = [], False, 'csr', False
         self.peer = ThreadingHTTPServer(('127.0.0.1', 0), Peer)
         self.client = ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
         for instance in (self.peer, self.client):
@@ -86,6 +93,16 @@ class ClientHttpTests(unittest.TestCase):
         self.assertIn(('/api/v1/inventory/ap-a', None), Peer.calls)
         self.assertNotIn(('/api/v1/inventory/ap-a?withExtendedInfo=true', None), Peer.calls)
         self.assertEqual(sum(path == '/api/v1/access/check' for path, _ in Peer.calls), 2)
+
+    def test_scoped_mlo_preserves_label_links_and_signal_without_global_reads(self):
+        Peer.mlo = True
+        result = self.request()
+        self.assertEqual(len(result['rows']), 1)
+        row = result['rows'][0]
+        self.assertEqual(row['band'], 'MLO')
+        self.assertEqual([link['band'] for link in row['mlo']['links']], ['5G', '6G'])
+        self.assertEqual(row['signal'], -49)
+        self.assertFalse(any(path.startswith('/api/v1/devices?') for path, _ in Peer.calls))
 
     def test_root_http_response_keeps_original_path(self):
         Peer.role = 'root'
